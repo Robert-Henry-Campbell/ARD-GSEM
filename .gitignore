@@ -1,0 +1,13 @@
+sumstats/
+reference/
+output/
+renv/library/
+renv/staging/
+renv/sandbox/
+renv/python/
+*.Rproj.user
+.Rhistory
+.RData
+manifest/variants.tsv.bgz
+manifest/*.rda
+meta/*.rda
