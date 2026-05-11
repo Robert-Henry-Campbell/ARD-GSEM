@@ -15,6 +15,9 @@ run_munge <- function(config, sex) {
       dt <- fread(cmd = paste("zcat", shQuote(sumstats_file)))
 
       n_raw <- nrow(dt)
+      # MAF filtering is applied here, then again inside GenomicSEM::munge() (HM3 join),
+      # and again inside GenomicSEM::sumstats() (1000G alignment). Redundant but cheap;
+      # each downstream step expects its own MAF guard.
       dt <- filter_variants(dt,
                             maf_threshold = config$munge$maf_threshold,
                             info_threshold = NULL)
@@ -49,7 +52,17 @@ run_munge <- function(config, sex) {
         "%s %s: Neff=%.0f (cases=%d, controls=%d), K=%.4f -> converting BETA/SE to log(OR) via beta/(K(1-K))",
         trait, sex, neff, cc$n_cases, cc$n_controls, K))
 
-      conv <- linear_to_logor(beta = dt$beta, se = dt$se, K = K)
+      K_warn <- config$munge$K_warn_threshold %||% 0.01
+      K_reject <- config$munge$K_reject_threshold %||% 1e-9
+      conv <- linear_to_logor(beta = dt$beta, se = dt$se, K = K,
+                              reject_threshold = K_reject,
+                              warn_threshold = K_warn)
+      if (isTRUE(conv$warn)) {
+        log_warn("munge", sprintf(
+          "%s %s: K=%.4f outside [%.3f, %.3f]; linear->log(OR) approximation has growing higher-order bias for SNPs with non-trivial effect",
+          trait, sex, K, K_warn, 1 - K_warn))
+        warnings_list <- c(warnings_list, sprintf("%s: K=%.4f extreme", trait, K))
+      }
       dt[, `:=`(beta = conv$beta, se = conv$se)]
 
       sentinel_cfg <- config$munge$polarity_sentinel
@@ -74,17 +87,18 @@ run_munge <- function(config, sex) {
                          effect = beta, SE = se, P = pval, N = neff)]
       fwrite(munge_dt, munge_input, sep = "\t")
 
-      # GenomicSEM::munge() resolves its output path (paste0(trait.names[i], ".sumstats.gz"))
-      # relative to CWD, NOT to the input file's directory. Without this setwd guard, every
-      # munged file lands in the project root instead of output/{sex}/munge/.
+      # GenomicSEM::munge() writes paste0(trait.names[i], ".sumstats(.gz)") and the log file
+      # as paths relative to CWD (verified by reading munge_main.R: there is even a literal
+      # log line "saved ... in the current working directory"). Without forcing CWD to
+      # out_dir during the call, the munged file lands wherever R happened to be, i.e. at the
+      # project root, exactly the symptom seen on the previous server run.
       hm3_abs <- normalizePath(config$paths$hm3_snplist, mustWork = TRUE)
       munge_input_abs <- normalizePath(munge_input, mustWork = TRUE)
       munge_trait <- paste0(prefix, trait)
       stale <- file.path(out_dir, paste0(munge_trait, ".sumstats.gz"))
       if (file.exists(stale)) file.remove(stale)
-      local({
-        saved_wd <- getwd()
-        on.exit(setwd(saved_wd), add = TRUE)
+      saved_wd <- getwd()
+      tryCatch({
         setwd(out_dir)
         GenomicSEM::munge(
           files = munge_input_abs,
@@ -94,7 +108,7 @@ run_munge <- function(config, sex) {
           maf.filter = config$munge$maf_threshold,
           log.name = paste0(munge_trait, "_munge")
         )
-      })
+      }, finally = setwd(saved_wd))
 
       munged_path <- file.path(out_dir, paste0(munge_trait, ".sumstats.gz"))
       if (!file.exists(munged_path)) {

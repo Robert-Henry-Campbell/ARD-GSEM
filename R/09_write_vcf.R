@@ -190,8 +190,13 @@ run_write_vcf <- function(config, sex) {
   gwas_path <- file.path(gwas_dir, paste0(sex, "_userGWAS_raw.rds"))
   if (!file.exists(gwas_path)) {
     legacy <- file.path(gwas_dir, "userGWAS_raw.rds")
-    if (file.exists(legacy)) gwas_path <- legacy else
+    if (file.exists(legacy)) {
+      log_warn("vcf", sprintf("Using legacy (unprefixed) userGWAS_raw at %s (mtime=%s) -- expected %s",
+                              legacy, format(file.mtime(legacy)), gwas_path))
+      gwas_path <- legacy
+    } else {
       log_fatal("vcf", sprintf("userGWAS output not found at %s (run --stage gwas first)", gwas_path))
+    }
   }
   gwas_result <- readRDS(gwas_path)
 
@@ -199,7 +204,11 @@ run_write_vcf <- function(config, sex) {
   snp_path <- file.path(ss_dir, paste0(sex, "_snp_sumstats.rds"))
   if (!file.exists(snp_path)) {
     legacy <- file.path(ss_dir, "snp_sumstats.rds")
-    if (file.exists(legacy)) snp_path <- legacy else snp_path <- NA_character_
+    if (file.exists(legacy)) {
+      log_warn("vcf", sprintf("Using legacy (unprefixed) snp_sumstats at %s (mtime=%s)",
+                              legacy, format(file.mtime(legacy))))
+      snp_path <- legacy
+    } else snp_path <- NA_character_
   }
   snp_sumstats <- if (!is.na(snp_path)) readRDS(snp_path) else NULL
 

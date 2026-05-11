@@ -1,12 +1,17 @@
 library(data.table)
 
 find_project_root <- function() {
-  d <- normalizePath(".", winslash = "/", mustWork = FALSE)
+  start_d <- normalizePath(".", winslash = "/", mustWork = FALSE)
+  d <- start_d
+  visited <- character(0)
   while (d != dirname(d)) {
+    visited <- c(visited, d)
     if (file.exists(file.path(d, "config", "pipeline.yaml"))) return(d)
     d <- dirname(d)
   }
-  stop("project root not found (no config/pipeline.yaml ancestor of ", getwd(), ")")
+  stop(sprintf(
+    "project root not found.\n  CWD: %s\n  walked: %s\n  hint: run tests from the repo or any subdirectory containing 'config/pipeline.yaml'.",
+    getwd(), paste(visited, collapse = " -> ")))
 }
 
 project_root <- find_project_root()

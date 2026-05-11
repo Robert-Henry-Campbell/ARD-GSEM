@@ -16,6 +16,12 @@ paths:
 munge:
   use_neff: true
   maf_threshold: 0.01
+  # linear -> log(OR) conversion thresholds. Warn when sample prevalence K is below
+  # K_warn_threshold (or above 1 - K_warn_threshold); reject when K(1-K) is below
+  # K_reject_threshold. The Neale linear-regression-on-0/1 approximation degrades at
+  # extreme K for SNPs with non-trivial effect; warn at 1%% by default.
+  K_warn_threshold: 0.01
+  K_reject_threshold: 1.0e-9
   # Set to null to skip the polarity check.
   polarity_sentinel:
     rsid: rs568226429

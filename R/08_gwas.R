@@ -26,6 +26,9 @@ run_gwas <- function(config, sex) {
   if (!file.exists(snp_path)) {
     legacy <- file.path(config$paths$output_dir, sex, "sumstats", "snp_sumstats.rds")
     if (file.exists(legacy)) {
+      log_warn("gwas", sprintf(
+        "Using legacy (unprefixed) snp_sumstats at %s (mtime=%s) -- expected %s",
+        legacy, format(file.mtime(legacy)), snp_path))
       snp_path <- legacy
     } else {
       log_fatal("gwas", sprintf(

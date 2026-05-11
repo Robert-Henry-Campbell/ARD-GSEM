@@ -10,7 +10,10 @@
 LEVELS <- c(DEBUG = 0L, INFO = 1L, WARN = 2L, ERROR = 3L, FATAL = 4L)
 
 init_logging <- function(config) {
-  run_id <- format(Sys.time(), "%Y%m%d_%H%M%S")
+  op <- options(digits.secs = 3)
+  on.exit(options(op), add = TRUE)
+  run_id <- format(Sys.time(), "%Y%m%d_%H%M%OS3")
+  run_id <- gsub("\\.", "_", run_id)
   log_dir <- file.path(config$paths$output_dir, "logs")
   dir.create(log_dir, recursive = TRUE, showWarnings = FALSE)
 
@@ -98,14 +101,24 @@ close_logging <- function() {
 
 # --- Config ---
 
-read_config <- function(path = "config/pipeline.yaml") {
+is_absolute_path <- function(p) {
+  startsWith(p, "/") || grepl("^[A-Za-z]:[/\\\\]", p) || startsWith(p, "\\\\")
+}
+
+read_config <- function(path = "config/pipeline.yaml", root = NULL) {
   if (!file.exists(path)) stop("Config not found: ", path)
   cfg <- yaml::read_yaml(path)
-  root <- cfg$project$root
+  effective_root <- root %||% cfg$project$root
+  if (is.null(effective_root) || !nzchar(effective_root) ||
+      !dir.exists(effective_root)) {
+    effective_root <- normalizePath(dirname(dirname(path)),
+                                    winslash = "/", mustWork = TRUE)
+  }
   for (nm in names(cfg$paths)) {
     p <- cfg$paths[[nm]]
-    if (!startsWith(p, "/")) cfg$paths[[nm]] <- file.path(root, p)
+    if (!is_absolute_path(p)) cfg$paths[[nm]] <- file.path(effective_root, p)
   }
+  cfg$project$root <- effective_root
   cfg
 }
 
@@ -122,16 +135,20 @@ compute_neff <- function(n_cases, n_controls) {
   out
 }
 
-linear_to_logor <- function(beta, se, K) {
+linear_to_logor <- function(beta, se, K,
+                            reject_threshold = 1e-9,
+                            warn_threshold = 0.01) {
   if (length(K) != 1L) stop("linear_to_logor: K must be a scalar (per-trait sample prevalence)")
   if (is.na(K) || K <= 0 || K >= 1) {
     stop(sprintf("linear_to_logor: invalid K=%s", as.character(K)))
   }
   scale <- K * (1 - K)
-  if (scale < 1e-6) {
-    stop(sprintf("linear_to_logor: K(1-K)=%g below 1e-6; trait too imbalanced for stable conversion", scale))
+  if (scale < reject_threshold) {
+    stop(sprintf("linear_to_logor: K(1-K)=%g below reject threshold %g; trait too imbalanced for stable conversion",
+                 scale, reject_threshold))
   }
-  list(beta = beta / scale, se = se / scale, scale = scale)
+  warn <- (K < warn_threshold || K > 1 - warn_threshold)
+  list(beta = beta / scale, se = se / scale, scale = scale, warn = warn)
 }
 
 harmonic_neff <- function(neffs) {
@@ -162,6 +179,17 @@ count_gz_lines <- function(path, chunk = 10000L) {
 
 parse_variant_column <- function(dt) {
   parts <- data.table::tstrsplit(dt$variant, ":", fixed = TRUE)
+  if (length(parts) != 4L) {
+    stop(sprintf(
+      "parse_variant_column: expected chr:pos:ref:alt (4 fields), got %d-field variants",
+      length(parts)))
+  }
+  bad <- vapply(parts, function(p) any(is.na(p) | !nzchar(p)), logical(1))
+  if (any(bad)) {
+    stop(sprintf(
+      "parse_variant_column: %d variant column(s) have NA/empty entries; sample row: %s",
+      sum(bad), dt$variant[which(is.na(parts[[1]]) | !nzchar(parts[[1]]))[1]]))
+  }
   dt[, `:=`(chr = parts[[1]], pos = as.integer(parts[[2]]),
             ref = parts[[3]], alt = parts[[4]])]
   dt
@@ -181,9 +209,20 @@ load_variants_manifest <- function(path) {
 }
 
 map_rsids <- function(sumstats, manifest) {
+  n_before <- nrow(sumstats)
   result <- manifest[sumstats, on = "variant", nomatch = NULL]
   result[, SNP := rsid]
   result[, rsid := NULL]
+  pct <- if (n_before == 0L) 0 else 100 * nrow(result) / n_before
+  log_info("munge",
+           sprintf("rsid map: %s -> %s variants (%.1f%% mapped)",
+                   format(n_before, big.mark = ","),
+                   format(nrow(result), big.mark = ","),
+                   pct))
+  if (n_before > 0L && pct < 50) {
+    log_warn("munge",
+             sprintf("rsid map: only %.1f%% of variants mapped; check variants_manifest", pct))
+  }
   result
 }
 
@@ -192,6 +231,8 @@ map_rsids <- function(sumstats, manifest) {
 filter_variants <- function(dt, maf_threshold = 0.01, info_threshold = NULL) {
   dt <- dt[low_confidence_variant == FALSE]
   dt <- dt[minor_AF >= maf_threshold]
+  # info_threshold preserved for non-Neale inputs that carry an 'info' column.
+  # Neale UKBB sumstats do not have one; the branch is a no-op there.
   if (!is.null(info_threshold) && "info" %in% names(dt)) {
     dt <- dt[info >= info_threshold]
   }
@@ -296,7 +337,7 @@ write_stage_manifest <- function(stage, sex, config, output_files, warnings = ch
     sex = sex,
     completed_at = format(Sys.time(), "%Y-%m-%dT%H:%M:%S"),
     run_id = .log_env$run_id %||% "unknown",
-    config_hash = digest::digest(config[[stage]] %||% config, algo = "sha256"),
+    config_hash = digest::digest(config[[stage]] %||% list(), algo = "sha256"),
     output_files = basename(output_files),
     traits_processed = length(output_files),
     warnings = warnings
@@ -339,8 +380,13 @@ get_case_control <- function(config, sex, trait) {
                              paste0("neale_", sex, "_manifest.rda"))
   env <- new.env()
   load(manifest_file, envir = env)
-  manifest_name <- ls(env)[1]
-  manifest <- get(manifest_name, envir = env)
+  objs <- ls(env)
+  if (length(objs) != 1L) {
+    stop(sprintf(
+      "get_case_control: expected exactly 1 object in %s, found %d (%s). Refusing to guess.",
+      basename(manifest_file), length(objs), paste(objs, collapse = ", ")))
+  }
+  manifest <- get(objs[1], envir = env)
   row <- manifest[manifest$phenotype == trait, ]
   if (nrow(row) == 0) stop(sprintf("Trait %s not found in %s manifest", trait, sex))
   list(n_cases = row$n_cases[1], n_controls = row$n_controls[1])

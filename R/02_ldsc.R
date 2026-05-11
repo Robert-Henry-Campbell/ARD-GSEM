@@ -25,15 +25,24 @@ run_ldsc <- function(config, sex) {
   ld_path <- config$paths$ld_scores
   wld_path <- config$paths$ld_scores
 
-  ldsc_output <- GenomicSEM::ldsc(
-    traits = munged_files,
-    sample.prev = sample_prevs,
-    population.prev = pop_prevs,
-    ld = ld_path,
-    wld = wld_path,
-    trait.names = trait_names,
-    stand = TRUE
-  )
+  # GenomicSEM::ldsc() also writes a "*_ldsc.log" to CWD (relative path, same trap as
+  # munge/sumstats). Force CWD to the per-sex ldsc dir for the duration of the call.
+  out_dir <- file.path(config$paths$output_dir, sex, "ldsc")
+  dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
+  munged_files_abs <- normalizePath(munged_files, mustWork = TRUE)
+  saved_wd <- getwd()
+  ldsc_output <- tryCatch({
+    setwd(out_dir)
+    GenomicSEM::ldsc(
+      traits = munged_files_abs,
+      sample.prev = sample_prevs,
+      population.prev = pop_prevs,
+      ld = ld_path,
+      wld = wld_path,
+      trait.names = trait_names,
+      stand = TRUE
+    )
+  }, finally = setwd(saved_wd))
 
   S <- ldsc_output$S
   V <- ldsc_output$V
@@ -99,6 +108,8 @@ run_ldsc <- function(config, sex) {
     frob_delta <- sqrt(sum((S_filtered - S_raw)^2))
     log_info("ldsc", sprintf("nearPD smoothing: Frobenius-norm delta = %.4g; %d iterations",
                              frob_delta, smoothed_result$iterations))
+    log_warn("ldsc",
+             "PSD smoothing applied to S only; V (sampling-covariance matrix of vech(S)) is unchanged. Downstream sandwich SEs in userGWAS may be slightly biased -- see GenomicSEM wiki on Matrix::nearPD use.")
     smoothed <- TRUE
   }
 
@@ -120,7 +131,6 @@ run_ldsc <- function(config, sex) {
     ldsc_output$S[keep_idx, keep_idx] <- S_filtered
   }
 
-  out_dir <- file.path(config$paths$output_dir, sex, "ldsc")
   saveRDS(ldsc_output, file.path(out_dir, "ldsc_full.rds"))
   saveRDS(S, file.path(out_dir, "S.rds"))
   saveRDS(V, file.path(out_dir, "V.rds"))

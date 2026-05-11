@@ -53,27 +53,39 @@ run_sumstats <- function(config, sex) {
   ref_prefix <- resolve_1000g_prefix(config$paths$thousand_g_plink)
   log_info("sumstats", sprintf("1000G reference prefix: %s", ref_prefix))
 
-  snp_sumstats <- GenomicSEM::sumstats(
-    files = files,
-    ref = ref_prefix,
-    trait.names = retained,
-    se.logit = rep(TRUE, length(retained)),
-    OLS = rep(FALSE, length(retained)),
-    linprob = rep(FALSE, length(retained)),
-    N = neffs,
-    betas = "effect",
-    ses = "SE",
-    info.filter = 0.6,
-    maf.filter = config$munge$maf_threshold,
-    keep.indel = FALSE,
-    parallel = TRUE,
-    cores = config$parallel$n_workers
-  )
-
   out_dir <- file.path(config$paths$output_dir, sex, "sumstats")
   dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
+
+  # GenomicSEM::sumstats() writes paste0(<traits>, "_sumstats.log") relative to CWD
+  # (same pattern as munge). Force CWD = out_dir for the call so the log lands in the
+  # sex-specific sumstats directory.
+  files_abs <- normalizePath(files, mustWork = TRUE)
+  saved_wd <- getwd()
+  snp_sumstats <- tryCatch({
+    setwd(out_dir)
+    GenomicSEM::sumstats(
+      files = files_abs,
+      ref = ref_prefix,
+      trait.names = retained,
+      se.logit = rep(TRUE, length(retained)),
+      OLS = rep(FALSE, length(retained)),
+      linprob = rep(FALSE, length(retained)),
+      N = neffs,
+      betas = "effect",
+      ses = "SE",
+      info.filter = 0.6,
+      maf.filter = config$munge$maf_threshold,
+      keep.indel = FALSE,
+      parallel = TRUE,
+      cores = config$parallel$n_workers
+    )
+  }, finally = setwd(saved_wd))
+
   saveRDS(snp_sumstats, file.path(out_dir, paste0(sex, "_snp_sumstats.rds")))
 
+  # Informational only: a JSON provenance record of the scale conversion + sumstats() call.
+  # Not consumed by any downstream stage in this pipeline; intended for human/audit use and
+  # for any external consumer that needs to know the units of the VCF effect estimates.
   scale_meta <- list(
     scale = "log_odds_ratio",
     source = "Neale UKBB round 2 linear regression on 0/1 phenotype",

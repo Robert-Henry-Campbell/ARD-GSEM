@@ -7,19 +7,25 @@
 find_project_root <- function() {
   full_args <- commandArgs(trailingOnly = FALSE)
   file_arg <- full_args[grep("^--file=", full_args)]
-  d <- if (length(file_arg) > 0L) {
+  start_d <- if (length(file_arg) > 0L) {
     dirname(normalizePath(sub("^--file=", "", file_arg[[1L]]), mustWork = FALSE))
   } else {
     normalizePath(getwd(), mustWork = FALSE)
   }
+  d <- start_d
+  visited <- character(0)
   while (d != dirname(d)) {
+    visited <- c(visited, d)
     if (file.exists(file.path(d, "config", "pipeline.yaml"))) return(d)
     d <- dirname(d)
   }
-  stop("project root not found (no config/pipeline.yaml ancestor)")
+  stop(sprintf(
+    "project root not found.\n  CWD: %s\n  walked: %s\n  hint: run from the repo or any subdirectory containing 'config/pipeline.yaml'.",
+    getwd(), paste(visited, collapse = " -> ")))
 }
 
-setwd(find_project_root())
+project_root <- find_project_root()
+setwd(project_root)
 source("R/00_setup.R")
 source("R/01_munge.R")
 source("R/02_ldsc.R")
@@ -33,7 +39,7 @@ source("R/09_write_vcf.R")
 source("R/10_plots.R")
 source("R/11_factor_summary.R")
 
-config <- read_config("config/pipeline.yaml")
+config <- read_config("config/pipeline.yaml", root = project_root)
 config <- setup_pipeline(config, sex = "both", mode = "smoke", threads = 4)
 
 errors <- character(0)

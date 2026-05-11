@@ -3,6 +3,7 @@ test_that("at K=0.5 the scale factor is 0.25 so logOR = 4 * beta_linear", {
   expect_equal(out$beta, 0.04)
   expect_equal(out$se, 0.008)
   expect_equal(out$scale, 0.25)
+  expect_false(out$warn)
 })
 
 test_that("Z = beta/SE is invariant under the conversion", {
@@ -28,9 +29,29 @@ test_that("invalid K is rejected", {
   expect_error(linear_to_logor(0.01, 0.002, K = NA), "invalid K")
 })
 
-test_that("extreme K with K(1-K) below threshold is rejected", {
-  expect_error(linear_to_logor(0.01, 0.002, K = 1e-7), "too imbalanced")
-  expect_error(linear_to_logor(0.01, 0.002, K = 1 - 1e-7), "too imbalanced")
+test_that("extreme K below default reject threshold (1e-9) is rejected", {
+  expect_error(linear_to_logor(0.01, 0.002, K = 1e-10), "too imbalanced")
+})
+
+test_that("reject threshold is configurable", {
+  # K=1e-4 -> scale~1e-4 passes default but should reject when threshold raised
+  expect_silent(linear_to_logor(0.01, 0.002, K = 1e-4))
+  expect_error(linear_to_logor(0.01, 0.002, K = 1e-4, reject_threshold = 1e-3),
+               "too imbalanced")
+})
+
+test_that("warn flag fires when K is below warn threshold (default 0.01)", {
+  out <- linear_to_logor(0.01, 0.002, K = 0.005)
+  expect_true(out$warn)
+  out2 <- linear_to_logor(0.01, 0.002, K = 0.995)
+  expect_true(out2$warn)
+})
+
+test_that("warn flag is configurable", {
+  out <- linear_to_logor(0.01, 0.002, K = 0.05, warn_threshold = 0.1)
+  expect_true(out$warn)
+  out2 <- linear_to_logor(0.01, 0.002, K = 0.05, warn_threshold = 0.001)
+  expect_false(out2$warn)
 })
 
 test_that("vector K is rejected", {
