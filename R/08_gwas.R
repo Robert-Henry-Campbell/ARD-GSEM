@@ -21,9 +21,16 @@ run_gwas <- function(config, sex) {
   ldsc_path <- file.path(config$paths$output_dir, sex, "ldsc", "ldsc_full.rds")
   ldsc_output <- readRDS(ldsc_path)
 
-  snp_path <- file.path(config$paths$output_dir, sex, "sumstats", "snp_sumstats.rds")
+  snp_path <- file.path(config$paths$output_dir, sex, "sumstats",
+                        paste0(sex, "_snp_sumstats.rds"))
   if (!file.exists(snp_path)) {
-    log_fatal("gwas", sprintf("snp_sumstats.rds not found at %s (run --stage sumstats first)", snp_path))
+    legacy <- file.path(config$paths$output_dir, sex, "sumstats", "snp_sumstats.rds")
+    if (file.exists(legacy)) {
+      snp_path <- legacy
+    } else {
+      log_fatal("gwas", sprintf(
+        "snp_sumstats not found at %s (run --stage sumstats first)", snp_path))
+    }
   }
   snp_sumstats <- readRDS(snp_path)
 
@@ -74,8 +81,8 @@ run_gwas <- function(config, sex) {
 
   out_dir <- file.path(config$paths$output_dir, sex, "gwas")
   dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
-  saveRDS(gwas_result, file.path(out_dir, "userGWAS_raw.rds"))
-  saveRDS(spec, file.path(out_dir, "model_spec.rds"))
+  saveRDS(gwas_result, file.path(out_dir, paste0(sex, "_userGWAS_raw.rds")))
+  saveRDS(spec, file.path(out_dir, paste0(sex, "_model_spec.rds")))
 
   for (f in names(gwas_result)) {
     g <- gwas_result[[f]]

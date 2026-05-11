@@ -16,7 +16,7 @@ parse_args <- function(args) {
       cat("Options:\n")
       cat("  --sex       male|female|both  (default: both)\n")
       cat("  --mode      smoke|full        (default: smoke)\n")
-      cat("  --stage     all|munge|ldsc|efa|cfa|sumstats|gwas|vcf|comparison|report  (default: all)\n")
+      cat("  --stage     all|munge|ldsc|efa|cfa|sumstats|gwas|vcf|factor_summary|plots|comparison|report  (default: all)\n")
       cat("  --threads   N                 (default: 24)\n")
       cat("  --resume    Skip stages with valid output manifests\n")
       cat("  --help      Show this message\n")
@@ -55,13 +55,16 @@ source("R/06_report.R")
 source("R/07_sumstats.R")
 source("R/08_gwas.R")
 source("R/09_write_vcf.R")
+source("R/10_plots.R")
+source("R/11_factor_summary.R")
 
 config <- read_config("config/pipeline.yaml")
 config <- setup_pipeline(config, sex = opts$sex, mode = opts$mode, threads = opts$threads)
 
 sexes <- if (opts$sex == "both") c("male", "female") else opts$sex
 stages <- if (opts$stage == "all") {
-  c("munge", "ldsc", "efa", "cfa", "sumstats", "gwas", "vcf", "comparison", "report")
+  c("munge", "ldsc", "efa", "cfa", "sumstats", "gwas", "vcf",
+    "factor_summary", "comparison", "plots", "report")
 } else opts$stage
 
 should_run <- function(stage_name) {
@@ -131,8 +134,24 @@ tryCatch({
     }
   }
 
+  if (should_run("factor_summary")) {
+    for (sex in sexes) {
+      if (!should_skip("factor_summary", sex)) run_factor_summary(config, sex)
+    }
+  }
+
   if (should_run("comparison") && opts$sex == "both") {
     if (!should_skip("comparison", "both")) run_comparison(config)
+  }
+
+  if (should_run("plots")) {
+    for (sex in sexes) {
+      if (!should_skip("plots", sex)) run_plots(config, sex)
+    }
+    if (opts$sex == "both") {
+      run_miami(config)
+      run_comparison_plot(config)
+    }
   }
 
   if (should_run("report")) {

@@ -115,7 +115,14 @@ run_cfa <- function(config, sex, ldsc_results = NULL, efa_results = NULL) {
     sol <- results$efa_fit$results
     if (!is.null(sol)) {
       fwrite(as.data.table(sol), file.path(out_dir, "loadings.csv"))
-      log_info("cfa", "Standardized loadings saved")
+      log_info("cfa", "Standardized EFA loadings saved")
+    }
+  }
+  if (!is.null(results$apriori_fit)) {
+    sol_ap <- results$apriori_fit$results
+    if (!is.null(sol_ap)) {
+      fwrite(as.data.table(sol_ap), file.path(out_dir, "loadings_apriori.csv"))
+      log_info("cfa", "Standardized a priori (chapter) loadings saved")
     }
   }
 

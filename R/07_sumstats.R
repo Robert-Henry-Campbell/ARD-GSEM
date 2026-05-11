@@ -30,7 +30,8 @@ run_sumstats <- function(config, sex) {
   }
 
   munge_dir <- file.path(config$paths$output_dir, sex, "munge")
-  files <- file.path(munge_dir, paste0(retained, "_pre_munge.tsv"))
+  prefix <- paste0(sex, "_")
+  files <- file.path(munge_dir, paste0(prefix, retained, "_pre_munge.tsv"))
   missing <- files[!file.exists(files)]
   if (length(missing) > 0L) {
     log_fatal("sumstats", sprintf(
@@ -71,7 +72,7 @@ run_sumstats <- function(config, sex) {
 
   out_dir <- file.path(config$paths$output_dir, sex, "sumstats")
   dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
-  saveRDS(snp_sumstats, file.path(out_dir, "snp_sumstats.rds"))
+  saveRDS(snp_sumstats, file.path(out_dir, paste0(sex, "_snp_sumstats.rds")))
 
   scale_meta <- list(
     scale = "log_odds_ratio",
@@ -84,7 +85,8 @@ run_sumstats <- function(config, sex) {
       info.filter = 0.6, maf.filter = config$munge$maf_threshold
     )
   )
-  jsonlite::write_json(scale_meta, file.path(out_dir, "scale_metadata.json"),
+  jsonlite::write_json(scale_meta,
+                       file.path(out_dir, paste0(sex, "_scale_metadata.json")),
                        auto_unbox = TRUE, pretty = TRUE)
 
   n_snps <- if (is.data.frame(snp_sumstats)) nrow(snp_sumstats) else NA_integer_

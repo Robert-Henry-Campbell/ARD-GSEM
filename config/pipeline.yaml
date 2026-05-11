@@ -45,6 +45,13 @@ gwas:
   genome_build: GRCh37
   study_id_prefix: ARD-GSEM
   snp_chunk_size: 50000
+  qsnp_threshold: 5.0e-8        # Q_SNP_pval below this gets FILTER=Q_SNP_HET in the VCF
+  write_qc_vcf: true            # also emit <sex>_chapter_gsem_qc.vcf.gz with Q_SNP_HET removed
+
+plots:
+  manhattan_sig_line: 5.0e-8
+  manhattan_sugg_line: 1.0e-5
+  top_snps_n: 20
 
 parallel:
   n_workers: 24

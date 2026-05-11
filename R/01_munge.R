@@ -67,26 +67,39 @@ run_munge <- function(config, sex) {
       }
 
       out_dir <- file.path(config$paths$output_dir, sex, "munge")
-      munge_input <- file.path(out_dir, paste0(trait, "_pre_munge.tsv"))
+      dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
+      prefix <- paste0(sex, "_")
+      munge_input <- file.path(out_dir, paste0(prefix, trait, "_pre_munge.tsv"))
       munge_dt <- dt[, .(SNP, CHR = chr, BP = pos, A1, A2, MAF = minor_AF,
                          effect = beta, SE = se, P = pval, N = neff)]
       fwrite(munge_dt, munge_input, sep = "\t")
 
-      GenomicSEM::munge(
-        files = munge_input,
-        hm3 = config$paths$hm3_snplist,
-        trait.names = trait,
-        N = neff,
-        maf.filter = config$munge$maf_threshold,
-        log.name = file.path(out_dir, paste0(trait, "_munge"))
-      )
+      # GenomicSEM::munge() resolves its output path (paste0(trait.names[i], ".sumstats.gz"))
+      # relative to CWD, NOT to the input file's directory. Without this setwd guard, every
+      # munged file lands in the project root instead of output/{sex}/munge/.
+      hm3_abs <- normalizePath(config$paths$hm3_snplist, mustWork = TRUE)
+      munge_input_abs <- normalizePath(munge_input, mustWork = TRUE)
+      munge_trait <- paste0(prefix, trait)
+      stale <- file.path(out_dir, paste0(munge_trait, ".sumstats.gz"))
+      if (file.exists(stale)) file.remove(stale)
+      local({
+        saved_wd <- getwd()
+        on.exit(setwd(saved_wd), add = TRUE)
+        setwd(out_dir)
+        GenomicSEM::munge(
+          files = munge_input_abs,
+          hm3 = hm3_abs,
+          trait.names = munge_trait,
+          N = neff,
+          maf.filter = config$munge$maf_threshold,
+          log.name = paste0(munge_trait, "_munge")
+        )
+      })
 
-      munged_path <- paste0(munge_input, ".sumstats.gz")
+      munged_path <- file.path(out_dir, paste0(munge_trait, ".sumstats.gz"))
       if (!file.exists(munged_path)) {
-        alt_path <- file.path(out_dir, paste0(trait, ".sumstats.gz"))
-        munged_candidates <- list.files(out_dir, pattern = paste0(trait, ".*\\.sumstats\\.gz$"),
-                                        full.names = TRUE)
-        if (length(munged_candidates) > 0) munged_path <- munged_candidates[1]
+        legacy <- paste0(munge_input, ".sumstats.gz")
+        if (file.exists(legacy)) munged_path <- legacy
       }
 
       if (file.exists(munged_path)) {

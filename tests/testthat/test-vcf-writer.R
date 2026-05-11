@@ -44,7 +44,7 @@ test_that("write_gwas_vcf produces a parseable GWAS-VCF round-trip", {
   expect_true(any(grepl("^##gsem_model=one_factor_per_ICD10_chapter$", hdr)))
   expect_true(any(grepl("^##gsem_sex=male$", hdr)))
 
-  format_ids <- c("ES", "SE", "LP", "AF", "SS")
+  format_ids <- c("ES", "SE", "LP", "AF", "SS", "HET", "HP")
   for (id in format_ids) {
     expect_true(any(grepl(sprintf("^##FORMAT=<ID=%s,", id), hdr)),
                 info = sprintf("missing FORMAT for %s", id))
@@ -63,9 +63,9 @@ test_that("write_gwas_vcf produces a parseable GWAS-VCF round-trip", {
   expect_equal(length(body), 20L)
   parts <- strsplit(body[1], "\t", fixed = TRUE)[[1]]
   expect_equal(length(parts), 9L + 2L)
-  expect_equal(parts[9], "ES:SE:LP:AF:SS")
+  expect_equal(parts[9], "ES:SE:LP:AF:SS:HET:HP")
   sample_field <- strsplit(parts[10], ":", fixed = TRUE)[[1]]
-  expect_equal(length(sample_field), 5L)
+  expect_equal(length(sample_field), 7L)
 })
 
 test_that("write_gwas_vcf rejects mismatched SNP sets across factors", {

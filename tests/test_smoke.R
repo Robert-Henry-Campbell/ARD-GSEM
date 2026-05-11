@@ -30,6 +30,8 @@ source("R/06_report.R")
 source("R/07_sumstats.R")
 source("R/08_gwas.R")
 source("R/09_write_vcf.R")
+source("R/10_plots.R")
+source("R/11_factor_summary.R")
 
 config <- read_config("config/pipeline.yaml")
 config <- setup_pipeline(config, sex = "both", mode = "smoke", threads = 4)
@@ -115,15 +117,39 @@ for (sex in c("male", "female")) {
     errors <<- c(errors, paste(sex, "vcf:", e$message))
     log_error("smoke", paste(sex, "vcf FAILED:", e$message))
   })
+
+  # Stage 4e: Factor summary
+  tryCatch({
+    run_factor_summary(config, sex = sex)
+  }, error = function(e) {
+    errors <<- c(errors, paste(sex, "factor_summary:", e$message))
+    log_error("smoke", paste(sex, "factor_summary FAILED:", e$message))
+  })
+
+  # Stage 4f: Plots
+  tryCatch({
+    run_plots(config, sex = sex)
+  }, error = function(e) {
+    errors <<- c(errors, paste(sex, "plots:", e$message))
+    log_error("smoke", paste(sex, "plots FAILED:", e$message))
+  })
 }
 
-# Stage 5: Comparison
+# Stage 5: Comparison (must run BEFORE cross-sex plots — forest plot reads loading_diff.csv)
 tryCatch({
   comp_results <- run_comparison(config)
   log_info("smoke", "Sex comparison complete")
 }, error = function(e) {
   errors <<- c(errors, paste("comparison:", e$message))
   log_error("smoke", paste("comparison FAILED:", e$message))
+})
+
+# Stage 5b: Miami + sex-difference forest (after comparison)
+tryCatch({
+  run_miami(config)
+  run_comparison_plot(config)
+}, error = function(e) {
+  log_warn("smoke", paste("cross-sex plots:", e$message))
 })
 
 # Stage 6: Report

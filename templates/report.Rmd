@@ -60,6 +60,16 @@ if (!is.null(data$female$efa_loadings)) {
 }
 ```
 
+## Genetic-Correlation Heatmaps
+
+```{r rg-heatmaps, fig.show='hold', out.width="49%"}
+out_dir <- config$paths$output_dir
+for (sex in c("male", "female")) {
+  p <- file.path(out_dir, sex, "plots", sprintf("%s_rg_heatmap.png", sex))
+  if (file.exists(p)) knitr::include_graphics(p)
+}
+```
+
 ## Confirmatory Factor Analysis
 
 ### Model Fit Comparison
@@ -78,6 +88,24 @@ if (nrow(fit_all) > 0) {
 }
 ```
 
+### Path Diagrams
+
+```{r path-diagrams, fig.show='hold', out.width="49%"}
+for (sex in c("male", "female")) {
+  p <- file.path(out_dir, sex, "plots", sprintf("%s_path_diagram.png", sex))
+  if (file.exists(p)) knitr::include_graphics(p)
+}
+```
+
+### Loadings
+
+```{r loadings-bar, fig.show='hold', out.width="49%"}
+for (sex in c("male", "female")) {
+  p <- file.path(out_dir, sex, "plots", sprintf("%s_loadings_bar.png", sex))
+  if (file.exists(p)) knitr::include_graphics(p)
+}
+```
+
 ## Sex Comparison
 
 ```{r comparison}
@@ -88,14 +116,72 @@ if (!is.null(data$comparison) && nrow(data$comparison) > 0) {
 }
 ```
 
+```{r sex-diff-forest, fig.align='center', out.width="80%"}
+p <- file.path(out_dir, "comparison", "sex_diff_forest.png")
+if (file.exists(p)) knitr::include_graphics(p)
+```
+
+## Factor GWAS
+
+### Per-Factor Summary
+
+```{r factor-summary}
+fs <- data.table()
+for (sex in c("male", "female")) {
+  p <- file.path(out_dir, sex, "gwas", sprintf("%s_factor_summary.csv", sex))
+  if (file.exists(p)) fs <- rbind(fs, fread(p), fill = TRUE)
+}
+if (nrow(fs) > 0) knitr::kable(fs, digits = 3,
+                                caption = "Per-(sex × factor) GWAS summary")
+```
+
+### Manhattan + QQ plots
+
+```{r manhattan-qq, fig.show='hold', out.width="49%"}
+for (sex in c("male", "female")) {
+  plot_dir <- file.path(out_dir, sex, "plots")
+  if (!dir.exists(plot_dir)) next
+  pngs <- list.files(plot_dir, pattern = "_(manhattan|qq)\\.png$", full.names = TRUE)
+  for (p in pngs) knitr::include_graphics(p)
+}
+```
+
+### Miami plots (male vs female per factor)
+
+```{r miami, fig.show='hold', out.width="95%"}
+miami_dir <- file.path(out_dir, "comparison")
+if (dir.exists(miami_dir)) {
+  pngs <- list.files(miami_dir, pattern = "^miami_.*\\.png$", full.names = TRUE)
+  for (p in pngs) knitr::include_graphics(p)
+}
+```
+
+### Top SNPs per factor
+
+```{r top-snps}
+for (sex in c("male", "female")) {
+  p <- file.path(out_dir, sex, "gwas", sprintf("%s_top_snps.csv", sex))
+  if (file.exists(p)) {
+    tdt <- fread(p)
+    if (nrow(tdt) > 0) {
+      cat(sprintf("\n#### %s\n\n", toupper(sex)))
+      print(knitr::kable(tdt, digits = 4))
+    }
+  }
+}
+```
+
 ## Factor GWAS Outputs
 
-```{r factor-gwas}
-out_dir <- config$paths$output_dir
-vcf_paths <- file.path(out_dir, c("male", "female"), "gwas",
-                       c("male_chapter_gsem.vcf.gz", "female_chapter_gsem.vcf.gz"))
+```{r factor-gwas-vcfs}
+vcf_paths <- c(
+  file.path(out_dir, "male",   "gwas", "male_chapter_gsem.vcf.gz"),
+  file.path(out_dir, "male",   "gwas", "male_chapter_gsem_qc.vcf.gz"),
+  file.path(out_dir, "female", "gwas", "female_chapter_gsem.vcf.gz"),
+  file.path(out_dir, "female", "gwas", "female_chapter_gsem_qc.vcf.gz")
+)
 vcf_status <- data.frame(
-  sex = c("male", "female"),
+  file = basename(vcf_paths),
   path = vcf_paths,
   exists = file.exists(vcf_paths),
   size_mb = ifelse(file.exists(vcf_paths),
@@ -103,7 +189,7 @@ vcf_status <- data.frame(
                     NA_real_)
 )
 knitr::kable(vcf_status,
-             caption = "GWAS-VCF outputs: one file per sex, each containing one chapter-factor 'sample'")
+             caption = "GWAS-VCF outputs: raw + Q_SNP_HET-filtered, one of each per sex. Each VCF has one chapter-factor 'sample'.")
 ```
 
 ## Scale and Units
@@ -121,4 +207,6 @@ Because Z = β/SE is invariant under this per-trait scaling, **LDSC heritability
 - EFA and CFA applied to the same genetic covariance matrix (double-dipping caveat applies).
 - Sex differences assessed via Wald Z-test on unstandardized loading differences from independent per-sex fits.
 - Per-SNP factor GWAS: `GenomicSEM::userGWAS()` regresses each ICD-10 chapter latent factor on SNP, run independently per sex on the aligned 1000G EUR reference.
-- Output format: [GWAS-VCF (MRC-IEU spec)](https://github.com/MRCIEU/gwas-vcf-specification), one file per sex, FORMAT fields ES (log OR), SE, LP (−log10 P), AF, SS.
+- Output format: [GWAS-VCF (MRC-IEU spec)](https://github.com/MRCIEU/gwas-vcf-specification), one file per sex, FORMAT fields ES (log OR), SE, LP (−log10 P), AF, SS, HET (Q_SNP), HP (Q_SNP_pval).
+- Q_SNP heterogeneity: SNPs with `Q_SNP_pval < 5e-8` in any factor get FILTER=`Q_SNP_HET` in the raw VCF and are excluded from the `_qc.vcf.gz` companion. λ_GC per factor is in the header (`##gsem_lambda_gc_<factor>=...`).
+- Path diagrams are emitted as Graphviz `.dot` files (auto-rendered to PNG when `dot` is on PATH); embed in a paper by either committing the `.dot` and rendering with `dot -Tpdf`, or using the included PNG.

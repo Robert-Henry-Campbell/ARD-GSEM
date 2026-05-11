@@ -8,8 +8,10 @@ run_ldsc <- function(config, sex) {
     log_fatal("ldsc", sprintf("Need >=2 munged traits for LDSC, found %d", length(munged_files)))
   }
 
-  trait_names <- sub("_pre_munge\\.tsv\\.sumstats\\.gz$", "", basename(munged_files))
+  trait_names <- basename(munged_files)
+  trait_names <- sub("_pre_munge\\.tsv\\.sumstats\\.gz$", "", trait_names)
   trait_names <- sub("\\.sumstats\\.gz$", "", trait_names)
+  trait_names <- sub(paste0("^", sex, "_"), "", trait_names)
   log_info("ldsc", sprintf("Running LDSC for %s (%d traits: %s)",
                            sex, length(trait_names), paste(trait_names, collapse = ", ")))
 
