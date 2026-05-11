@@ -11,10 +11,15 @@ paths:
   ld_scores: reference/eur_w_ld_chr
   hm3_snplist: reference/w_hm3.snplist
   variants_manifest: manifest/variants.tsv.bgz
+  thousand_g_plink: reference/1000G_Phase3_plinkfiles
 
 munge:
   use_neff: true
   maf_threshold: 0.01
+  # Set to null to skip the polarity check.
+  polarity_sentinel:
+    rsid: rs568226429
+    a1: A
 
 ldsc:
   h2_z_threshold: 2.0
@@ -33,6 +38,13 @@ cfa:
 
 comparison:
   mode: wald_test
+
+gwas:
+  smooth_check: true
+  output_format: gwas_vcf
+  genome_build: GRCh37
+  study_id_prefix: ARD-GSEM
+  snp_chunk_size: 50000
 
 parallel:
   n_workers: 24

@@ -88,10 +88,37 @@ if (!is.null(data$comparison) && nrow(data$comparison) > 0) {
 }
 ```
 
+## Factor GWAS Outputs
+
+```{r factor-gwas}
+out_dir <- config$paths$output_dir
+vcf_paths <- file.path(out_dir, c("male", "female"), "gwas",
+                       c("male_chapter_gsem.vcf.gz", "female_chapter_gsem.vcf.gz"))
+vcf_status <- data.frame(
+  sex = c("male", "female"),
+  path = vcf_paths,
+  exists = file.exists(vcf_paths),
+  size_mb = ifelse(file.exists(vcf_paths),
+                    round(file.size(vcf_paths) / 1024^2, 2),
+                    NA_real_)
+)
+knitr::kable(vcf_status,
+             caption = "GWAS-VCF outputs: one file per sex, each containing one chapter-factor 'sample'")
+```
+
+## Scale and Units
+
+The input data are Neale UKBB round-2 GWAS sumstats from **linear regression on the 0/1 phenotype** (not logistic). Each per-trait BETA/SE is converted to log-odds at munge time via
+
+$$\beta_{\log\text{OR}} \;=\; \beta_{\text{linear}} \,/\, [K\,(1-K)], \qquad K = n_{\text{cases}} \,/\, (n_{\text{cases}} + n_{\text{controls}}).$$
+
+Because Z = β/SE is invariant under this per-trait scaling, **LDSC heritability values are identical to what would be obtained on the raw linear-probability scale**, but now interpretable as h² on the log-odds (≈liability) scale. Downstream `GenomicSEM::sumstats()` is called with `se.logit=TRUE, OLS=FALSE, linprob=FALSE` (data already log-odds; do not double-convert), and `GenomicSEM::userGWAS()` produces factor BETAs as log(OR) per allele copy of ALT. The two output VCFs carry these log-odds effects in the `ES` FORMAT field per GWAS-VCF spec; see header lines `##gsem_scale=log_odds_ratio` and `##gsem_conversion=...`.
+
 ## Methods Note
 
-- All h2 estimates are on the **observed scale** (no population prevalence applied).
 - Effective sample size: Neff = 4 * n_cases * n_controls / (n_cases + n_controls).
 - LDSC free intercept used to account for within-sex sample overlap.
 - EFA and CFA applied to the same genetic covariance matrix (double-dipping caveat applies).
 - Sex differences assessed via Wald Z-test on unstandardized loading differences from independent per-sex fits.
+- Per-SNP factor GWAS: `GenomicSEM::userGWAS()` regresses each ICD-10 chapter latent factor on SNP, run independently per sex on the aligned 1000G EUR reference.
+- Output format: [GWAS-VCF (MRC-IEU spec)](https://github.com/MRCIEU/gwas-vcf-specification), one file per sex, FORMAT fields ES (log OR), SE, LP (−log10 P), AF, SS.

@@ -117,14 +117,27 @@ load_cfa_result <- function(config, sex) {
 extract_loadings_table <- function(model_result) {
   if (is.null(model_result$results)) return(NULL)
   res <- as.data.table(model_result$results)
-  if (!"op" %in% names(res)) return(NULL)
+  if (!"op" %in% names(res)) {
+    log_warn("comparison", "extract_loadings_table: 'op' column missing from CFA results")
+    return(NULL)
+  }
   loadings <- res[op == "=~"]
   if (nrow(loadings) == 0) return(NULL)
+
+  est_col <- intersect(c("Unstand_Est", "est", "Estimate"), names(loadings))[1]
+  se_col  <- intersect(c("Unstand_SE",  "se",  "Std_Error", "SE"), names(loadings))[1]
+  if (is.na(est_col) || is.na(se_col)) {
+    log_warn("comparison", sprintf(
+      "extract_loadings_table: cannot locate estimate/SE columns; have: %s",
+      paste(names(loadings), collapse = ", ")))
+    return(NULL)
+  }
+
   data.table(
     trait = loadings$rhs,
     factor = loadings$lhs,
-    loading = loadings$Unstand_Est,
-    se = loadings$Unstand_SE
+    loading = loadings[[est_col]],
+    se = loadings[[se_col]]
   )
 }
 

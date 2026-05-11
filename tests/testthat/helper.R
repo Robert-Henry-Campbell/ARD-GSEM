@@ -1,6 +1,15 @@
 library(data.table)
 
-project_root <- "/mnt/sdg/robert/ardmr/GSEM"
+find_project_root <- function() {
+  d <- normalizePath(".", winslash = "/", mustWork = FALSE)
+  while (d != dirname(d)) {
+    if (file.exists(file.path(d, "config", "pipeline.yaml"))) return(d)
+    d <- dirname(d)
+  }
+  stop("project root not found (no config/pipeline.yaml ancestor of ", getwd(), ")")
+}
+
+project_root <- find_project_root()
 source(file.path(project_root, "R/utils.R"))
 source(file.path(project_root, "R/05_comparison.R"))
 

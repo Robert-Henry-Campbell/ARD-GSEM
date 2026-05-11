@@ -25,9 +25,11 @@ init_logging <- function(config) {
     .log_env$json_file <- file(json_path, open = "wt")
   }
 
-  latest <- file.path(log_dir, "latest.log")
-  if (file.exists(latest) || is.symlink(latest)) file.remove(latest)
-  file.symlink(log_path, latest)
+  if (.Platform$OS.type == "unix") {
+    latest <- file.path(log_dir, "latest.log")
+    if (file.exists(latest) || is.symlink(latest)) file.remove(latest)
+    file.symlink(log_path, latest)
+  }
 
   invisible(run_id)
 }
@@ -110,10 +112,50 @@ read_config <- function(path = "config/pipeline.yaml") {
 # --- Neff ---
 
 compute_neff <- function(n_cases, n_controls) {
-  if (any(n_cases <= 0) || any(n_controls <= 0)) {
-    stop("n_cases and n_controls must be positive")
+  bad <- n_cases <= 0 | n_controls <= 0 | is.na(n_cases) | is.na(n_controls)
+  out <- 4 * n_cases * n_controls / (n_cases + n_controls)
+  if (any(bad)) {
+    log_warn("munge", sprintf("compute_neff: %d row(s) with non-positive/NA counts -> NA",
+                              sum(bad)))
+    out[bad] <- NA_real_
   }
-  4 * n_cases * n_controls / (n_cases + n_controls)
+  out
+}
+
+linear_to_logor <- function(beta, se, K) {
+  if (length(K) != 1L) stop("linear_to_logor: K must be a scalar (per-trait sample prevalence)")
+  if (is.na(K) || K <= 0 || K >= 1) {
+    stop(sprintf("linear_to_logor: invalid K=%s", as.character(K)))
+  }
+  scale <- K * (1 - K)
+  if (scale < 1e-6) {
+    stop(sprintf("linear_to_logor: K(1-K)=%g below 1e-6; trait too imbalanced for stable conversion", scale))
+  }
+  list(beta = beta / scale, se = se / scale, scale = scale)
+}
+
+harmonic_neff <- function(neffs) {
+  neffs <- neffs[!is.na(neffs) & neffs > 0]
+  if (length(neffs) == 0L) return(NA_real_)
+  length(neffs) / sum(1 / neffs)
+}
+
+vech_diag_index <- function(k) {
+  if (k < 1L) stop("vech_diag_index: k must be >= 1")
+  if (k == 1L) return(1L)
+  cumsum(c(1L, seq(as.integer(k), 2L, by = -1L)))
+}
+
+count_gz_lines <- function(path, chunk = 10000L) {
+  con <- gzfile(path, "r")
+  on.exit(close(con), add = TRUE)
+  n <- 0L
+  repeat {
+    lines <- readLines(con, n = chunk, warn = FALSE)
+    if (length(lines) == 0L) break
+    n <- n + length(lines)
+  }
+  n
 }
 
 # --- Variant Parsing ---
@@ -159,44 +201,48 @@ filter_variants <- function(dt, maf_threshold = 0.01, info_threshold = NULL) {
 
 # --- Polarity Check ---
 
-check_polarity_sentinel <- function(dt, sentinel_rsid = "rs568226429",
-                                    expected_a1 = "A") {
+check_polarity_sentinel <- function(dt, sentinel_rsid = NULL, expected_a1 = NULL) {
+  if (is.null(sentinel_rsid) || is.null(expected_a1)) {
+    return(list(polarity_correct = NA,
+                message = "polarity check skipped (no sentinel configured)"))
+  }
   row <- dt[SNP == sentinel_rsid]
   if (nrow(row) == 0) {
-    return(list(polarity_correct = NA, message = "Sentinel SNP not found"))
+    return(list(polarity_correct = NA,
+                message = sprintf("Sentinel SNP %s not found", sentinel_rsid)))
   }
   correct <- row$A1[1] == expected_a1
   list(polarity_correct = correct,
-       message = sprintf("Sentinel %s: A1=%s (expected %s)", sentinel_rsid, row$A1[1], expected_a1))
+       message = sprintf("Sentinel %s: A1=%s (expected %s)",
+                         sentinel_rsid, row$A1[1], expected_a1))
 }
 
 # --- A Priori Model Building ---
 
 build_apriori_model <- function(traits, categories, min_indicators = 2) {
+  stopifnot(all(nchar(traits) == 3L))
   mapping <- categories[code %in% traits, .(code, chapter)]
-  if (nrow(mapping) == 0) {
-    unmapped <- traits[!traits %in% categories$code]
-    first_letters <- substr(unmapped, 1, 1)
-    for (i in seq_along(unmapped)) {
-      match_rows <- categories[startsWith(code, first_letters[i])]
-      if (nrow(match_rows) > 0) {
-        mapping <- rbind(mapping, data.table::data.table(
-          code = unmapped[i], chapter = match_rows$chapter[1]
-        ))
-      }
-    }
+  unmapped <- setdiff(traits, mapping$code)
+  if (length(unmapped) > 0) {
+    log_warn("cfa", sprintf("build_apriori_model: %d trait(s) not in icd10_categories (no fallback): %s",
+                             length(unmapped), paste(unmapped, collapse = ", ")))
   }
+  if (nrow(mapping) == 0) return("")
 
   by_factor <- split(mapping$code, mapping$chapter)
   by_factor <- by_factor[vapply(by_factor, length, integer(1)) >= min_indicators]
 
   if (length(by_factor) == 0) return("")
 
-  lines <- vapply(names(by_factor), function(ch) {
-    factor_name <- gsub("[^A-Za-z0-9]", "_", ch)
-    factor_name <- substr(factor_name, 1, 20)
-    paste0(factor_name, " =~ ", paste(by_factor[[ch]], collapse = " + "))
+  factor_names <- vapply(names(by_factor), function(ch) {
+    fn <- gsub("[^A-Za-z0-9]", "_", ch)
+    substr(fn, 1, 20)
   }, character(1))
+  stopifnot(!any(duplicated(factor_names)))
+
+  lines <- mapply(function(fn, codes) {
+    paste0(fn, " =~ ", paste(codes, collapse = " + "))
+  }, factor_names, by_factor, USE.NAMES = FALSE)
 
   paste(lines, collapse = "\n")
 }

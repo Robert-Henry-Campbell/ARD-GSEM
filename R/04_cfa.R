@@ -30,6 +30,11 @@ run_cfa <- function(config, sex, ldsc_results = NULL, efa_results = NULL) {
   # EFA-derived model
   if (!is.null(efa_loadings)) {
     efa_model <- efa_to_lavaan(efa_loadings, threshold = config$efa$loading_threshold)
+    if (nchar(efa_model) == 0) {
+      log_warn("cfa", sprintf(
+        "EFA-derived model is empty: no indicator passed loading_threshold=%.2f; skipping EFA CFA fit",
+        config$efa$loading_threshold))
+    }
     if (nchar(efa_model) > 0) {
       log_info("cfa", sprintf("Fitting EFA-derived model (%d factor(s), %d indicators)...",
                               ncol(efa_loadings), sum(apply(abs(efa_loadings) >= config$efa$loading_threshold, 2, sum))))
@@ -127,11 +132,17 @@ extract_fit <- function(model_result) {
     return(list(cfi = NA, rmsea = NA, srmr = NA, chisq = NA, df = NA))
   }
   mf <- model_result$modelfit
+  pick <- function(...) {
+    for (nm in c(...)) {
+      if (nm %in% colnames(mf)) return(mf[1, nm])
+    }
+    NA
+  }
   list(
-    cfi = as.numeric(mf[1, "cfi"]) %||% NA,
-    rmsea = as.numeric(mf[1, "rmsea"]) %||% NA,
-    srmr = as.numeric(mf[1, "srmr"]) %||% NA,
-    chisq = as.numeric(mf[1, "chisq"]) %||% NA,
-    df = as.integer(mf[1, "df"]) %||% NA
+    cfi = as.numeric(pick("CFI", "cfi")),
+    rmsea = as.numeric(pick("RMSEA", "rmsea")),
+    srmr = as.numeric(pick("SRMR", "srmr")),
+    chisq = as.numeric(pick("chisq", "Chisq", "CHISQ")),
+    df = as.integer(pick("df", "DF"))
   )
 }

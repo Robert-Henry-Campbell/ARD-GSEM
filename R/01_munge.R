@@ -32,26 +32,44 @@ run_munge <- function(config, sex) {
       cc <- get_case_control(config, sex, trait)
       neff <- compute_neff(cc$n_cases, cc$n_controls)
 
+      if (is.na(neff)) {
+        log_warn("munge", sprintf("%s %s: Neff is NA (cases=%s controls=%s); skipping",
+                                  trait, sex,
+                                  as.character(cc$n_cases), as.character(cc$n_controls)))
+        warnings_list <- c(warnings_list, sprintf("%s: Neff NA, skipped", trait))
+        next
+      }
       if (neff < 1000) {
         log_warn("munge", sprintf("%s %s: Neff=%.0f (very low; expect underpowered h2)", trait, sex, neff))
         warnings_list <- c(warnings_list, sprintf("%s: Neff=%.0f", trait, neff))
       }
 
-      log_info("munge", sprintf("%s %s: Neff=%.0f (cases=%d, controls=%d)",
-                                trait, sex, neff, cc$n_cases, cc$n_controls))
+      K <- cc$n_cases / (cc$n_cases + cc$n_controls)
+      log_info("munge", sprintf(
+        "%s %s: Neff=%.0f (cases=%d, controls=%d), K=%.4f -> converting BETA/SE to log(OR) via beta/(K(1-K))",
+        trait, sex, neff, cc$n_cases, cc$n_controls, K))
 
-      polarity <- check_polarity_sentinel(dt)
+      conv <- linear_to_logor(beta = dt$beta, se = dt$se, K = K)
+      dt[, `:=`(beta = conv$beta, se = conv$se)]
+
+      sentinel_cfg <- config$munge$polarity_sentinel
+      polarity <- check_polarity_sentinel(dt,
+                                          sentinel_rsid = sentinel_cfg$rsid,
+                                          expected_a1 = sentinel_cfg$a1)
       if (!is.na(polarity$polarity_correct)) {
         if (polarity$polarity_correct) {
           log_info("munge", sprintf("Polarity check PASSED (%s)", polarity$message))
         } else {
           log_warn("munge", sprintf("Polarity check FAILED (%s)", polarity$message))
         }
+      } else {
+        log_debug("munge", sprintf("Polarity: %s", polarity$message))
       }
 
       out_dir <- file.path(config$paths$output_dir, sex, "munge")
       munge_input <- file.path(out_dir, paste0(trait, "_pre_munge.tsv"))
-      munge_dt <- dt[, .(SNP, A1, A2, effect = beta, SE = se, P = pval, N = neff)]
+      munge_dt <- dt[, .(SNP, CHR = chr, BP = pos, A1, A2, MAF = minor_AF,
+                         effect = beta, SE = se, P = pval, N = neff)]
       fwrite(munge_dt, munge_input, sep = "\t")
 
       GenomicSEM::munge(
@@ -73,14 +91,15 @@ run_munge <- function(config, sex) {
 
       if (file.exists(munged_path)) {
         munged_files <- c(munged_files, munged_path)
-        n_snps <- length(readLines(gzcon(file(munged_path, "rb")), n = -1)) - 1
+        n_snps <- count_gz_lines(munged_path) - 1L
         log_info("munge", sprintf("%s %s: %s HM3 SNPs retained",
                                   trait, sex, format(n_snps, big.mark = ",")))
       } else {
         log_warn("munge", sprintf("%s %s: munged file not found at expected path", trait, sex))
       }
 
-      file.remove(munge_input)
+      # Keep munge_input (pre-munge wide TSV): the sumstats stage reads it for the
+      # raw per-trait BETA/SE on the log(OR) scale.
 
     }, error = function(e) {
       log_error("munge", sprintf("%s %s FAILED: %s", trait, sex, e$message))

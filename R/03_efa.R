@@ -27,9 +27,20 @@ run_efa <- function(config, sex, ldsc_results = NULL) {
   log_info("efa", sprintf("Parallel analysis on %dx%d genetic correlation matrix (%s)",
                           nrow(rg), ncol(rg), sex))
 
+  neffs <- vapply(retained, function(trait) {
+    cc <- get_case_control(config, sex, trait)
+    compute_neff(cc$n_cases, cc$n_controls)
+  }, numeric(1))
+  n_obs <- harmonic_neff(neffs)
+  if (is.na(n_obs)) {
+    log_warn("efa", "harmonic Neff is NA; falling back to n.obs=1000 placeholder")
+    n_obs <- 1000
+  }
+  log_info("efa", sprintf("EFA n.obs = harmonic mean of per-trait Neff = %.0f", n_obs))
+
   n_factors <- 1
   if (nrow(rg) >= 4 && config$efa$use_parallel_analysis) {
-    pa <- psych::fa.parallel(rg, n.obs = 1000, fa = "fa", fm = "ml",
+    pa <- psych::fa.parallel(rg, n.obs = n_obs, fa = "fa", fm = "ml",
                              plot = FALSE, n.iter = 20)
     n_factors <- max(1, pa$nfact)
   } else if (nrow(rg) == 3) {
@@ -43,7 +54,7 @@ run_efa <- function(config, sex, ldsc_results = NULL) {
   if (n_factors == 1) rotation <- "none"
 
   fa_result <- psych::fa(rg, nfactors = n_factors, rotate = rotation,
-                         fm = "ml", n.obs = 1000)
+                         fm = "ml", n.obs = n_obs)
 
   loadings_matrix <- matrix(fa_result$loadings[], nrow = nrow(rg), ncol = n_factors)
   rownames(loadings_matrix) <- retained

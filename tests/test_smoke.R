@@ -4,7 +4,22 @@
 # Expected runtime: <15 min on 24 cores
 # Exit 0 = pass, exit 1 = fail
 
-setwd("/mnt/sdg/robert/ardmr/GSEM")
+find_project_root <- function() {
+  full_args <- commandArgs(trailingOnly = FALSE)
+  file_arg <- full_args[grep("^--file=", full_args)]
+  d <- if (length(file_arg) > 0L) {
+    dirname(normalizePath(sub("^--file=", "", file_arg[[1L]]), mustWork = FALSE))
+  } else {
+    normalizePath(getwd(), mustWork = FALSE)
+  }
+  while (d != dirname(d)) {
+    if (file.exists(file.path(d, "config", "pipeline.yaml"))) return(d)
+    d <- dirname(d)
+  }
+  stop("project root not found (no config/pipeline.yaml ancestor)")
+}
+
+setwd(find_project_root())
 source("R/00_setup.R")
 source("R/01_munge.R")
 source("R/02_ldsc.R")
@@ -12,6 +27,9 @@ source("R/03_efa.R")
 source("R/04_cfa.R")
 source("R/05_comparison.R")
 source("R/06_report.R")
+source("R/07_sumstats.R")
+source("R/08_gwas.R")
+source("R/09_write_vcf.R")
 
 config <- read_config("config/pipeline.yaml")
 config <- setup_pipeline(config, sex = "both", mode = "smoke", threads = 4)
@@ -66,6 +84,36 @@ for (sex in c("male", "female")) {
   }, error = function(e) {
     errors <<- c(errors, paste(sex, "cfa:", e$message))
     log_error("smoke", paste(sex, "cfa FAILED:", e$message))
+  })
+
+  # Stage 4b: Sumstats (per-SNP alignment to 1000G)
+  tryCatch({
+    sumstats_results <- run_sumstats(config, sex = sex)
+    log_info("smoke", paste(sex, "sumstats: SNP-level alignment complete"))
+  }, error = function(e) {
+    errors <<- c(errors, paste(sex, "sumstats:", e$message))
+    log_error("smoke", paste(sex, "sumstats FAILED:", e$message))
+  })
+
+  # Stage 4c: GWAS (factor-level userGWAS)
+  tryCatch({
+    gwas_results <- run_gwas(config, sex = sex)
+    log_info("smoke", paste(sex, "gwas: factor GWAS over",
+                             length(gwas_results$factors), "chapter factor(s)"))
+  }, error = function(e) {
+    errors <<- c(errors, paste(sex, "gwas:", e$message))
+    log_error("smoke", paste(sex, "gwas FAILED:", e$message))
+  })
+
+  # Stage 4d: VCF write
+  tryCatch({
+    vcf_res <- run_write_vcf(config, sex = sex)
+    if (!file.exists(vcf_res$path)) stop("VCF file not written")
+    log_info("smoke", paste(sex, "vcf:", vcf_res$n_variants, "variants x",
+                             vcf_res$n_factors, "factor(s) written to", vcf_res$path))
+  }, error = function(e) {
+    errors <<- c(errors, paste(sex, "vcf:", e$message))
+    log_error("smoke", paste(sex, "vcf FAILED:", e$message))
   })
 }
 

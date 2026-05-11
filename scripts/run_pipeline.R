@@ -16,7 +16,7 @@ parse_args <- function(args) {
       cat("Options:\n")
       cat("  --sex       male|female|both  (default: both)\n")
       cat("  --mode      smoke|full        (default: smoke)\n")
-      cat("  --stage     all|munge|ldsc|efa|cfa|comparison|report  (default: all)\n")
+      cat("  --stage     all|munge|ldsc|efa|cfa|sumstats|gwas|vcf|comparison|report  (default: all)\n")
       cat("  --threads   N                 (default: 24)\n")
       cat("  --resume    Skip stages with valid output manifests\n")
       cat("  --help      Show this message\n")
@@ -29,7 +29,22 @@ parse_args <- function(args) {
 
 opts <- parse_args(args)
 
-setwd("/mnt/sdg/robert/ardmr/GSEM")
+find_project_root <- function() {
+  full_args <- commandArgs(trailingOnly = FALSE)
+  file_arg <- full_args[grep("^--file=", full_args)]
+  d <- if (length(file_arg) > 0L) {
+    dirname(normalizePath(sub("^--file=", "", file_arg[[1L]]), mustWork = FALSE))
+  } else {
+    normalizePath(getwd(), mustWork = FALSE)
+  }
+  while (d != dirname(d)) {
+    if (file.exists(file.path(d, "config", "pipeline.yaml"))) return(d)
+    d <- dirname(d)
+  }
+  stop("project root not found (no config/pipeline.yaml ancestor)")
+}
+
+setwd(find_project_root())
 source("R/00_setup.R")
 source("R/01_munge.R")
 source("R/02_ldsc.R")
@@ -37,12 +52,17 @@ source("R/03_efa.R")
 source("R/04_cfa.R")
 source("R/05_comparison.R")
 source("R/06_report.R")
+source("R/07_sumstats.R")
+source("R/08_gwas.R")
+source("R/09_write_vcf.R")
 
 config <- read_config("config/pipeline.yaml")
 config <- setup_pipeline(config, sex = opts$sex, mode = opts$mode, threads = opts$threads)
 
 sexes <- if (opts$sex == "both") c("male", "female") else opts$sex
-stages <- if (opts$stage == "all") c("munge", "ldsc", "efa", "cfa", "comparison", "report") else opts$stage
+stages <- if (opts$stage == "all") {
+  c("munge", "ldsc", "efa", "cfa", "sumstats", "gwas", "vcf", "comparison", "report")
+} else opts$stage
 
 should_run <- function(stage_name) {
   stage_name %in% stages
@@ -90,6 +110,24 @@ tryCatch({
   if (should_run("cfa")) {
     for (sex in sexes) {
       if (!should_skip("cfa", sex)) run_cfa(config, sex)
+    }
+  }
+
+  if (should_run("sumstats")) {
+    for (sex in sexes) {
+      if (!should_skip("sumstats", sex)) run_sumstats(config, sex)
+    }
+  }
+
+  if (should_run("gwas")) {
+    for (sex in sexes) {
+      if (!should_skip("gwas", sex)) run_gwas(config, sex)
+    }
+  }
+
+  if (should_run("vcf")) {
+    for (sex in sexes) {
+      if (!should_skip("vcf", sex)) run_write_vcf(config, sex)
     }
   }
 
