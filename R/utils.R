@@ -349,7 +349,9 @@ write_stage_manifest <- function(stage, sex, config, output_files, warnings = ch
     sex = sex,
     completed_at = format(Sys.time(), "%Y-%m-%dT%H:%M:%S"),
     run_id = .log_env$run_id %||% "unknown",
-    config_hash = digest::digest(config[[stage]] %||% list(), algo = "sha256"),
+    config_hash = digest::digest(
+      list(stage = config[[stage]] %||% list(), paths = config$paths),
+      algo = "sha256"),
     output_files = basename(output_files),
     traits_processed = length(output_files),
     warnings = warnings
@@ -375,8 +377,12 @@ read_stage_manifest <- function(stage, sex, config) {
 
 discover_traits <- function(config, sex) {
   dir_path <- file.path(config$paths$sumstats_dir, sex)
-  files <- list.files(dir_path, pattern = "\\.gwas\\.imputed_v3\\.", full.names = FALSE)
-  sub("\\.gwas\\.imputed_v3\\..*", "", files)
+  # Filename pattern is config-driven so non-Neale inputs can be plugged in.
+  # Stored under config$discover (not config$munge) so the munge stage hash is
+  # unaffected by adding/changing this key -- prevents stale-manifest invalidation.
+  pat <- config$discover$sumstats_filename_pattern %||% "\\.gwas\\.imputed_v3\\."
+  files <- list.files(dir_path, pattern = pat, full.names = FALSE)
+  sub(paste0(pat, ".*"), "", files)
 }
 
 get_shared_traits <- function(config) {

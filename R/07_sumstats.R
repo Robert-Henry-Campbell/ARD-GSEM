@@ -103,6 +103,16 @@ run_sumstats <- function(config, sex) {
   log_info("sumstats", sprintf("Aligned SNP-level sumstats saved: %s SNPs x %d traits",
                                 format(n_snps, big.mark = ","), length(retained)))
 
+  if (isTRUE(config$sumstats$cleanup_pre_munge)) {
+    removed <- 0L
+    for (f in files) {
+      if (file.exists(f) && file.remove(f)) removed <- removed + 1L
+    }
+    log_info("sumstats", sprintf(
+      "cleanup_pre_munge=true: removed %d/%d pre-munge TSV(s) from %s",
+      removed, length(files), file.path(config$paths$output_dir, sex, "munge")))
+  }
+
   write_stage_manifest("sumstats", sex, config, list.files(out_dir, full.names = TRUE))
 
   list(

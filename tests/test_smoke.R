@@ -40,7 +40,7 @@ source("R/10_plots.R")
 source("R/11_factor_summary.R")
 
 config <- read_config("config/pipeline.yaml", root = project_root)
-config <- setup_pipeline(config, sex = "both", mode = "smoke", threads = 4)
+config <- setup_pipeline(config, sex = "both", threads = 4)
 
 errors <- character(0)
 ldsc_results_cache <- list()

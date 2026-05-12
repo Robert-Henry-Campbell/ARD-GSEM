@@ -30,7 +30,7 @@ h2 Z-threshold: `r config$ldsc$h2_z_threshold`
 
 ```{r h2-male}
 if (!is.null(data$male$h2)) {
-  knitr::kable(data$male$h2, digits = 4, caption = "Male h2 estimates (observed scale)")
+  knitr::kable(data$male$h2, digits = 4, caption = "Male h2 estimates (log-odds scale; ≈ liability for low-K traits — see Scale and Units)")
 }
 ```
 
@@ -38,7 +38,7 @@ if (!is.null(data$male$h2)) {
 
 ```{r h2-female}
 if (!is.null(data$female$h2)) {
-  knitr::kable(data$female$h2, digits = 4, caption = "Female h2 estimates (observed scale)")
+  knitr::kable(data$female$h2, digits = 4, caption = "Female h2 estimates (log-odds scale; ≈ liability for low-K traits — see Scale and Units)")
 }
 ```
 
@@ -176,9 +176,9 @@ for (sex in c("male", "female")) {
 ```{r factor-gwas-vcfs}
 vcf_paths <- c(
   file.path(out_dir, "male",   "gwas", "male_chapter_gsem.vcf.gz"),
-  file.path(out_dir, "male",   "gwas", "male_chapter_gsem_qc.vcf.gz"),
+  file.path(out_dir, "male",   "gwas", "male_chapter_gsem.vcf.gz.tbi"),
   file.path(out_dir, "female", "gwas", "female_chapter_gsem.vcf.gz"),
-  file.path(out_dir, "female", "gwas", "female_chapter_gsem_qc.vcf.gz")
+  file.path(out_dir, "female", "gwas", "female_chapter_gsem.vcf.gz.tbi")
 )
 vcf_status <- data.frame(
   file = basename(vcf_paths),
@@ -189,7 +189,7 @@ vcf_status <- data.frame(
                     NA_real_)
 )
 knitr::kable(vcf_status,
-             caption = "GWAS-VCF outputs: raw + Q_SNP_HET-filtered, one of each per sex. Each VCF has one chapter-factor 'sample'.")
+             caption = "GWAS-VCF outputs (bgzip + tabix-indexed): one .vcf.gz + .tbi pair per sex. Each VCF contains one chapter-factor 'sample'. Q_SNP heterogeneity is exposed per-factor as the HP FORMAT field; no variant-level Q_SNP_HET FILTER is applied here — filter downstream on HP per your analysis.")
 ```
 
 ## Scale and Units
@@ -203,10 +203,13 @@ Because Z = β/SE is invariant under this per-trait scaling, **LDSC heritability
 ## Methods Note
 
 - Effective sample size: Neff = 4 * n_cases * n_controls / (n_cases + n_controls).
-- LDSC free intercept used to account for within-sex sample overlap.
+- LDSC free intercept used to account for within-sex sample overlap. Population prevalence is intentionally set to NA (no liability-scale rescaling) — combined with the linear→log(OR) conversion at munge time, h² is reported on the log-odds scale, which approximates the liability-scale value for low-K traits without requiring an externally-provided population prevalence.
 - EFA and CFA applied to the same genetic covariance matrix (double-dipping caveat applies).
-- Sex differences assessed via Wald Z-test on unstandardized loading differences from independent per-sex fits.
-- Per-SNP factor GWAS: `GenomicSEM::userGWAS()` regresses each ICD-10 chapter latent factor on SNP, run independently per sex on the aligned 1000G EUR reference.
-- Output format: [GWAS-VCF (MRC-IEU spec)](https://github.com/MRCIEU/gwas-vcf-specification), one file per sex, FORMAT fields ES (log OR), SE, LP (−log10 P), AF, SS, HET (Q_SNP), HP (Q_SNP_pval).
-- Q_SNP heterogeneity: SNPs with `Q_SNP_pval < 5e-8` in any factor get FILTER=`Q_SNP_HET` in the raw VCF and are excluded from the `_qc.vcf.gz` companion. λ_GC per factor is in the header (`##gsem_lambda_gc_<factor>=...`).
+- Sex differences assessed via Wald Z-test on unstandardised loading differences from independent per-sex fits. **Factor indicators may differ across sexes** when the h² Z-threshold filter retains different traits per sex — the sex-difference comparison only Wald-tests loadings on the **shared** indicators, but a chapter factor with indicator set {A,B} in male versus {A,B,C,D} in female is technically a different construct in each sex; this is methodologically defensible (sex-stratified factor models) but worth noting when interpreting the comparison table.
+- Per-SNP factor GWAS: `GenomicSEM::userGWAS(..., std.lv = TRUE)` regresses each ICD-10 chapter latent factor on SNP, run independently per sex on the aligned 1000G EUR reference. With `std.lv = TRUE`, each factor's variance is fixed to 1 and SNP betas are reported in per-SD-of-factor units (comparable across factors).
+- PSD smoothing: when the genetic-covariance matrix S fails the PSD check after the h²-Z filter, `Matrix::nearPD()` is applied to S only. The sampling-covariance matrix V is left unchanged, which means downstream sandwich SEs in `userGWAS` may be slightly biased on runs that triggered smoothing. The pipeline logs both the Frobenius-norm delta of the smoothing and the V-mismatch caveat.
+- Output format: [GWAS-VCF (MRC-IEU spec)](https://github.com/MRCIEU/gwas-vcf-specification), one bgzipped + tabix-indexed file per sex (`.vcf.gz` + `.vcf.gz.tbi`). FORMAT fields: ES (log OR per ALT copy), SE, LP (−log10 P), AF, SS, HET (Q_SNP χ²), HP (Q_SNP p-value), SF (per-factor SEM-convergence flag: 1 = userGWAS did not converge at this SNP for this factor, 0 = converged).
+- **Q_SNP heterogeneity** is exposed as the per-factor FORMAT field `HP`. We deliberately do **not** emit a variant-level FILTER for Q_SNP_HET — a SNP that is heterogeneous on one chapter factor is still informative for the others. Downstream consumers should filter on `HP` per their needs (the GenomicSEM wiki recommends `HP < 5e-8` plus LD pruning).
+- **λ_GC reported in the VCF header (`##gsem_lambda_gc_<factor>`) and `factor_summary.csv` is the raw value** computed across all per-(SNP, factor) P-values, not the post-Q_SNP-filtered value some downstream papers report. To get the filtered λ_GC, recompute on the subset with `HP >= 5e-8`.
 - Path diagrams are emitted as Graphviz `.dot` files (auto-rendered to PNG when `dot` is on PATH); embed in a paper by either committing the `.dot` and rendering with `dot -Tpdf`, or using the included PNG.
+- Manhattan and Miami plots downsample non-significant SNPs (default: keep all SNPs with `P < 1e-3`, plus a random 10% of the rest) to make rendering tractable at 1M-SNP scale. The downsampling is purely cosmetic — every significant signal is retained at full density. Disable via `plots.manhattan_bg_keep_frac: 1.0` in `config/pipeline.yaml`.

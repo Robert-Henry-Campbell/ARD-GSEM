@@ -74,7 +74,7 @@ test_that("dot_path_diagram emits an edge per loading row", {
   expect_true(grepl("label=\"0.70\"", dot, fixed = TRUE))
 })
 
-test_that("VCF Q_SNP_HET FILTER fires when Q_SNP_pval below threshold", {
+test_that("VCF FILTER is always PASS (no variant-level Q_SNP_HET); HP is exposed per-factor", {
   set.seed(4)
   snps <- paste0("rs", 1:30)
   mk <- function(qp) data.table(
@@ -88,42 +88,46 @@ test_that("VCF Q_SNP_HET FILTER fires when Q_SNP_pval below threshold", {
   qp[c(5, 10, 15)] <- 1e-10
   g1 <- mk(qp); g2 <- mk(runif(30))
   tmp <- tempfile(fileext = ".vcf.gz")
-  on.exit(unlink(c(tmp, sub("\\.vcf\\.gz$", "_qc.vcf.gz", tmp))), add = TRUE)
+  on.exit(unlink(c(tmp, paste0(tmp, ".tbi"),
+                   sub("\\.gz$", "", tmp))), add = TRUE)
   res <- write_gwas_vcf(list(A = g1, B = g2), NULL, tmp,
-                        metadata = list(sex = "male"),
-                        qsnp_threshold = 5e-8,
-                        write_qc_filtered = TRUE)
-  expect_equal(res$n_qsnp_het, 3L)
-  expect_true(!is.null(res$qc_path) && file.exists(res$qc_path))
+                        metadata = list(sex = "male", std_lv = TRUE))
 
-  lines <- readLines(gzfile(tmp))
+  lines <- readLines(gzfile(res$path))
+  hdr <- lines[startsWith(lines, "#")]
   data_rows <- lines[!startsWith(lines, "#")]
-  filters <- vapply(strsplit(data_rows, "\t", fixed = TRUE), `[[`, character(1), 7L)
-  expect_equal(sum(filters == "Q_SNP_HET"), 3L)
 
-  qc_lines <- readLines(gzfile(res$qc_path))
-  qc_data <- qc_lines[!startsWith(qc_lines, "#")]
-  expect_equal(length(qc_data), nrow(g1) - 3L)
+  # No variant-level FILTER for Q_SNP_HET anywhere.
+  expect_false(any(grepl("^##FILTER=<ID=Q_SNP_HET", hdr)))
+  filters <- vapply(strsplit(data_rows, "\t", fixed = TRUE), `[[`, character(1), 7L)
+  expect_true(all(filters == "PASS"))
+
+  # The companion _qc.vcf.gz must NOT be emitted.
+  qc_companion <- sub("\\.vcf\\.gz$", "_qc.vcf.gz", res$path)
+  expect_false(file.exists(qc_companion))
+
+  # HP (per-factor Q_SNP_pval) is still a FORMAT field carrying the per-(SNP,factor) info.
+  expect_true(any(grepl("^##FORMAT=<ID=HP,", hdr)))
 })
 
-test_that("VCF FORMAT field includes HET and HP", {
+test_that("VCF FORMAT field includes HET, HP, and SF", {
   snps <- paste0("rs", 1:5)
   g <- data.table(
     SNP = snps, CHR = "1", BP = 1:5, A1 = "A", A2 = "G", MAF = 0.1,
     est = rnorm(5), SE = runif(5, 0.01, 0.02), Pval_Estimate = runif(5),
     Q_SNP = c(1, 2, 3, 4, 5), Q_SNP_df = 1L,
-    Q_SNP_pval = c(0.5, 0.3, 0.1, 0.01, 1e-9)
+    Q_SNP_pval = c(0.5, 0.3, 0.1, 0.01, 1e-9),
+    fail = c(FALSE, FALSE, TRUE, FALSE, FALSE)
   )
   tmp <- tempfile(fileext = ".vcf.gz")
-  on.exit(unlink(c(tmp, sub("\\.vcf\\.gz$", "_qc.vcf.gz", tmp))), add = TRUE)
-  write_gwas_vcf(list(A = g), NULL, tmp,
-                 metadata = list(sex = "male"),
-                 qsnp_threshold = 5e-8,
-                 write_qc_filtered = TRUE)
-  lines <- readLines(gzfile(tmp))
+  on.exit(unlink(c(tmp, paste0(tmp, ".tbi"),
+                   sub("\\.gz$", "", tmp))), add = TRUE)
+  res <- write_gwas_vcf(list(A = g), NULL, tmp,
+                        metadata = list(sex = "male", std_lv = TRUE))
+  lines <- readLines(gzfile(res$path))
   hdr <- lines[startsWith(lines, "#")]
   expect_true(any(grepl("^##FORMAT=<ID=HET,", hdr)))
   expect_true(any(grepl("^##FORMAT=<ID=HP,", hdr)))
-  expect_true(any(grepl("^##FILTER=<ID=Q_SNP_HET,", hdr)))
+  expect_true(any(grepl("^##FORMAT=<ID=SF,", hdr)))
   expect_true(any(grepl("^##gsem_lambda_gc_A=", hdr)))
 })

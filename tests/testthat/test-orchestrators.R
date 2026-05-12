@@ -11,12 +11,11 @@ make_fake_config <- function(tmpdir, sex = "male") {
       output_dir = file.path(tmpdir, "output"),
       meta_dir = file.path(tmpdir, "meta"),
       manifest_dir = file.path(tmpdir, "manifest"),
-      thousand_g_plink = file.path(tmpdir, "ref_plink")
+      thousand_g_reference = file.path(tmpdir, "reference.1000G.maf.0.005.txt")
     ),
     munge = list(maf_threshold = 0.01),
     cfa = list(estimator = "DWLS", min_indicators_per_factor = 2),
-    gwas = list(smooth_check = TRUE, genome_build = "GRCh37",
-                qsnp_threshold = 5e-8, write_qc_vcf = FALSE),
+    gwas = list(smooth_check = TRUE, genome_build = "GRCh37", std_lv = TRUE),
     parallel = list(n_workers = 1)
   )
 }
@@ -67,10 +66,11 @@ write_fake_manifest <- function(config, sex, traits) {
 }
 
 write_fake_plink_ref <- function(config) {
-  dir.create(config$paths$thousand_g_plink, recursive = TRUE, showWarnings = FALSE)
-  file.create(file.path(config$paths$thousand_g_plink, "1000G.EUR.QC.bed"))
-  file.create(file.path(config$paths$thousand_g_plink, "1000G.EUR.QC.bim"))
-  file.create(file.path(config$paths$thousand_g_plink, "1000G.EUR.QC.fam"))
+  # GenomicSEM::sumstats() reads `ref` as a single text file via fread().
+  # Create a stub file so resolve_1000g_reference() can find it.
+  ref_path <- config$paths$thousand_g_reference
+  dir.create(dirname(ref_path), recursive = TRUE, showWarnings = FALSE)
+  writeLines(c("SNP\tA1\tA2\tMAF", "rs1\tA\tG\t0.2"), ref_path)
 }
 
 skip_if_no_mockery <- function() {
@@ -137,9 +137,10 @@ test_that("run_gwas builds the augmented model and saves the prefixed outputs", 
                                  Pval_Estimate = runif(30),
                                  Q_SNP = abs(rnorm(30)), Q_SNP_df = 1L,
                                  Q_SNP_pval = runif(30))
-  mockery::stub(run_gwas, "GenomicSEM::userGWAS", function(model, sub, ...) {
+  mockery::stub(run_gwas, "GenomicSEM::userGWAS", function(model, sub, ..., std.lv) {
     captured$model <<- model
     captured$sub <<- sub
+    captured$std.lv <<- std.lv
     rep(list(fake_factor_df), length(sub))
   })
 
@@ -151,6 +152,49 @@ test_that("run_gwas builds the augmented model and saves the prefixed outputs", 
                                      "male_model_spec.rds")))
   expect_match(captured$model, "=~ D50 \\+ D64")
   expect_true(any(grepl("~ SNP$", captured$sub)))
+  expect_true(isTRUE(captured$std.lv),
+              "std.lv = TRUE must be passed to GenomicSEM::userGWAS by default")
+})
+
+test_that("run_gwas wraps a single-factor userGWAS return value (length(sub)==1) into a list", {
+  skip_if_no_mockery()
+  tmp <- tempfile("orch_"); dir.create(tmp)
+  on.exit(unlink(tmp, recursive = TRUE), add = TRUE)
+  cfg <- make_fake_config(tmp, sex = "male")
+  traits <- c("D50", "D64")   # one chapter -> one factor
+  write_fake_manifest(cfg, "male", traits)
+  write_fake_ldsc(cfg, "male", traits)
+  dir.create(file.path(cfg$paths$output_dir, "male", "sumstats"),
+             recursive = TRUE, showWarnings = FALSE)
+  fake_snp <- data.table(SNP = paste0("rs", 1:30), A1 = "A", A2 = "G",
+                          CHR = "1", BP = 1:30, MAF = 0.2)
+  saveRDS(fake_snp, file.path(cfg$paths$output_dir, "male", "sumstats",
+                               "male_snp_sumstats.rds"))
+
+  dir.create(cfg$paths$meta_dir, recursive = TRUE, showWarnings = FALSE)
+  fwrite(data.table(code = c("D50", "D64"),
+                    chapter = c("Diseases of the blood", "Diseases of the blood")),
+         file.path(cfg$paths$meta_dir, "icd10_categories.csv"))
+
+  fake_factor_df <- data.table(SNP = fake_snp$SNP, CHR = "1", BP = 1:30,
+                                 A1 = "A", A2 = "G", MAF = 0.2,
+                                 est = rnorm(30), SE = runif(30, 0.01, 0.02),
+                                 Pval_Estimate = runif(30),
+                                 Q_SNP = abs(rnorm(30)), Q_SNP_df = 1L,
+                                 Q_SNP_pval = runif(30))
+  # Stub userGWAS to return a bare data.frame (not a length-1 list), as
+  # the real userGWAS does when sub has length 1.
+  mockery::stub(run_gwas, "GenomicSEM::userGWAS", function(...) {
+    fake_factor_df
+  })
+
+  res <- run_gwas(cfg, sex = "male")
+
+  out <- readRDS(file.path(cfg$paths$output_dir, "male", "gwas",
+                            "male_userGWAS_raw.rds"))
+  expect_true(is.list(out))
+  expect_equal(length(out), 1L)
+  expect_true(is.data.frame(out[[1]]))
 })
 
 test_that("run_write_vcf reads sex-prefixed inputs and produces sex-prefixed VCF", {

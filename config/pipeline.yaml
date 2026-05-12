@@ -28,6 +28,13 @@ munge:
   # check never fired. Set to a real {rsid, a1} pair to re-enable.
   polarity_sentinel: null
 
+discover:
+  # discover_traits() regex applied to filenames in sumstats/{sex}/.
+  # Default matches Neale UKBB round-2 naming: <code>.gwas.imputed_v3.<sex>.tsv.bgz
+  # Stored outside config$munge so editing this key doesn't invalidate the munge
+  # stage's resume-hash.
+  sumstats_filename_pattern: "\\.gwas\\.imputed_v3\\."
+
 ldsc:
   h2_z_threshold: 2.0
   liability_scale: false
@@ -52,13 +59,30 @@ gwas:
   genome_build: GRCh37
   study_id_prefix: ARD-GSEM
   snp_chunk_size: 50000
-  qsnp_threshold: 5.0e-8        # Q_SNP_pval below this gets FILTER=Q_SNP_HET in the VCF
-  write_qc_vcf: true            # also emit <sex>_chapter_gsem_qc.vcf.gz with Q_SNP_HET removed
+  # Factor scale identification: TRUE = fix factor variance to 1 so SNP betas are
+  # per-SD-of-factor (recommended; matches GenomicSEM tutorial convention).
+  # FALSE = marker-variable identification (SNP betas in units of the first indicator).
+  std_lv: true
+  # Q_SNP heterogeneity is exposed per-factor as VCF FORMAT field HP (Q_SNP_pval).
+  # No variant-level FILTER and no qc.vcf.gz companion are produced; downstream
+  # consumers filter on HP themselves.
+
+sumstats:
+  # Delete <sex>_<trait>_pre_munge.tsv files after sumstats() consumes them.
+  # These are large (~250 GB at 230 traits x 2 sexes). Default false so we never
+  # delete by surprise; flip on once the run has shipped.
+  cleanup_pre_munge: false
 
 plots:
   manhattan_sig_line: 5.0e-8
   manhattan_sugg_line: 1.0e-5
   top_snps_n: 20
+  # Manhattan + Miami downsampling: keep every SNP with P < manhattan_keep_threshold,
+  # plus a random manhattan_bg_keep_frac fraction of the rest. Doesn't change the
+  # significant signal, ~10x faster to render at 1M-point scale.
+  # Set manhattan_bg_keep_frac: 1.0 to disable downsampling.
+  manhattan_keep_threshold: 1.0e-3
+  manhattan_bg_keep_frac: 0.1
 
 parallel:
   n_workers: 24

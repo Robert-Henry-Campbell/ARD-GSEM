@@ -6,13 +6,13 @@ suppressPackageStartupMessages({
 
 source("R/utils.R")
 
-setup_pipeline <- function(config, sex = "both", mode = "smoke", threads = NULL) {
+setup_pipeline <- function(config, sex = "both", threads = NULL) {
   if (!is.null(threads)) config$parallel$n_workers <- threads
 
   init_logging(config)
   log_info("setup", sprintf("Config: %s", config$project$name))
-  log_info("setup", sprintf("Threads: %d | Mode: %s | Sex: %s",
-                            config$parallel$n_workers, mode, sex))
+  log_info("setup", sprintf("Threads: %d | Sex: %s",
+                            config$parallel$n_workers, sex))
   report_tempdir()
 
   sexes <- if (sex == "both") c("male", "female") else sex
