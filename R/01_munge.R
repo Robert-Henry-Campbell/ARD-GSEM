@@ -137,7 +137,18 @@ run_munge <- function(config, sex) {
   log_info("munge", sprintf("Munge complete: %d/%d %s traits processed",
                             length(munged_files), length(traits), sex))
 
-  write_stage_manifest("munge", sex, config, munged_files, warnings_list)
+  if (length(munged_files) == length(traits)) {
+    write_stage_manifest("munge", sex, config, munged_files, warnings_list)
+  } else {
+    munged_traits <- sub(paste0("^", sex, "_"), "",
+                         sub("\\.sumstats\\.gz$", "", basename(munged_files)))
+    munged_traits <- sub("_pre_munge\\.tsv$", "", munged_traits)
+    failed <- setdiff(traits, munged_traits)
+    log_warn("munge", sprintf(
+      "Only %d/%d traits munged successfully; NOT writing stage manifest so --resume will retry. Failed: %s",
+      length(munged_files), length(traits),
+      paste(failed, collapse = ", ")))
+  }
 
   list(munged_files = munged_files, traits = traits, n_munged = length(munged_files))
 }

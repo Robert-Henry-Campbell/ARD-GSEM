@@ -60,6 +60,12 @@ run_gwas <- function(config, sex) {
                             cores, smooth_check))
   t0 <- Sys.time()
 
+  std_lv <- isTRUE(config$gwas$std_lv %||% TRUE)
+  log_info("gwas", sprintf("userGWAS std.lv=%s (factor variance %s)",
+                            std_lv,
+                            if (std_lv) "fixed to 1; SNP betas are per-SD-of-factor"
+                            else "free; SNP betas are in units of the first indicator"))
+
   gwas_result <- GenomicSEM::userGWAS(
     covstruc = ldsc_output,
     SNPs = snp_sumstats,
@@ -69,12 +75,17 @@ run_gwas <- function(config, sex) {
     cores = cores,
     parallel = TRUE,
     smooth_check = smooth_check,
+    std.lv = std_lv,
     printwarn = FALSE
   )
 
   elapsed <- as.numeric(difftime(Sys.time(), t0, units = "mins"))
   log_info("gwas", sprintf("userGWAS complete in %.1f min", elapsed))
 
+  # userGWAS returns a bare data.frame (not a length-1 list) when sub has 1 entry.
+  if (length(spec$sub) == 1L && is.data.frame(gwas_result)) {
+    gwas_result <- list(gwas_result)
+  }
   if (!is.list(gwas_result) || length(gwas_result) != length(spec$sub)) {
     log_fatal("gwas", sprintf(
       "userGWAS returned %d elements; expected %d (one per sub regression)",

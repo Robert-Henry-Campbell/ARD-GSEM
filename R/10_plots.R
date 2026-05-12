@@ -2,10 +2,22 @@ suppressPackageStartupMessages({
   library(ggplot2)
 })
 
-plot_manhattan <- function(df, factor_name, sex, sig_line = 5e-8, sugg_line = 1e-5) {
+plot_manhattan <- function(df, factor_name, sex, sig_line = 5e-8, sugg_line = 1e-5,
+                            keep_threshold = 1e-3, bg_keep_frac = 0.1, seed = 1L) {
   d <- as.data.table(df)
   d <- d[!is.na(P) & !is.na(CHR) & !is.na(BP) & P > 0]
   if (nrow(d) == 0L) return(NULL)
+
+  # Downsample non-significant SNPs to keep rendering tractable at 1M+ points.
+  # Every SNP with P < keep_threshold is retained; a uniform random fraction
+  # bg_keep_frac of the rest is kept. Signal & threshold lines are preserved.
+  if (!is.null(bg_keep_frac) && bg_keep_frac < 1) {
+    sig_mask <- d$P < keep_threshold
+    set.seed(seed)
+    bg_keep <- !sig_mask & runif(nrow(d)) < bg_keep_frac
+    d <- d[sig_mask | bg_keep]
+  }
+
   d[, CHR := as.character(CHR)]
   chr_levels <- unique(d$CHR)
   chr_levels <- chr_levels[order(suppressWarnings(as.integer(chr_levels)),
@@ -58,12 +70,22 @@ plot_qq <- function(df, factor_name, sex) {
     theme_minimal(base_size = 11)
 }
 
-plot_miami <- function(male_df, female_df, factor_name, sig_line = 5e-8) {
+plot_miami <- function(male_df, female_df, factor_name, sig_line = 5e-8,
+                        keep_threshold = 1e-3, bg_keep_frac = 0.1, seed = 1L) {
   m <- as.data.table(male_df)[!is.na(P) & P > 0 & !is.na(CHR) & !is.na(BP)]
   f <- as.data.table(female_df)[!is.na(P) & P > 0 & !is.na(CHR) & !is.na(BP)]
   if (nrow(m) == 0L || nrow(f) == 0L) return(NULL)
   m[, sex := "male"]; f[, sex := "female"]
   d <- rbind(m, f, fill = TRUE)
+
+  # Downsample non-significant SNPs identically across sexes; preserves all
+  # significant signal in both panels.
+  if (!is.null(bg_keep_frac) && bg_keep_frac < 1) {
+    sig_mask <- d$P < keep_threshold
+    set.seed(seed)
+    bg_keep <- !sig_mask & runif(nrow(d)) < bg_keep_frac
+    d <- d[sig_mask | bg_keep]
+  }
   d[, CHR := as.character(CHR)]
   chr_levels <- unique(d$CHR)
   chr_levels <- chr_levels[order(suppressWarnings(as.integer(chr_levels)),
@@ -224,9 +246,16 @@ run_plots <- function(config, sex) {
                           paste0(sex, "_snp_sumstats.rds"))
     snp_sumstats <- if (file.exists(snp_path)) readRDS(snp_path) else NULL
 
+    sig_line  <- config$plots$manhattan_sig_line %||% 5e-8
+    sugg_line <- config$plots$manhattan_sugg_line %||% 1e-5
+    keep_thr  <- config$plots$manhattan_keep_threshold %||% 1e-3
+    bg_keep   <- config$plots$manhattan_bg_keep_frac %||% 0.1
     for (f in names(gwas_result)) {
       g <- normalize_gwas_columns(gwas_result[[f]], snp_sumstats)
-      man <- plot_manhattan(g, factor_name = f, sex = sex)
+      man <- plot_manhattan(g, factor_name = f, sex = sex,
+                             sig_line = sig_line, sugg_line = sugg_line,
+                             keep_threshold = keep_thr,
+                             bg_keep_frac = bg_keep)
       qq  <- plot_qq(g, factor_name = f, sex = sex)
       pm <- save_plot(man, file.path(out_dir, sprintf("%s_%s_manhattan.png", sex, f)),
                        width = 12, height = 4)
@@ -316,10 +345,14 @@ run_miami <- function(config) {
   out_dir <- file.path(config$paths$output_dir, "comparison")
   dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
   written <- character(0)
+  sig_line <- config$plots$manhattan_sig_line %||% 5e-8
+  keep_thr <- config$plots$manhattan_keep_threshold %||% 1e-3
+  bg_keep  <- config$plots$manhattan_bg_keep_frac %||% 0.1
   for (f in intersect(names(m_all), names(f_all))) {
     m <- normalize_gwas_columns(m_all[[f]], NULL)
     fm <- normalize_gwas_columns(f_all[[f]], NULL)
-    p <- plot_miami(m, fm, factor_name = f)
+    p <- plot_miami(m, fm, factor_name = f, sig_line = sig_line,
+                     keep_threshold = keep_thr, bg_keep_frac = bg_keep)
     out <- save_plot(p, file.path(out_dir, sprintf("miami_%s.png", f)),
                       width = 12, height = 6)
     written <- c(written, na.omit(out))

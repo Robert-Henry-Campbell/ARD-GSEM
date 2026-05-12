@@ -3,11 +3,14 @@
 args <- commandArgs(trailingOnly = TRUE)
 
 parse_args <- function(args) {
-  opts <- list(sex = "both", mode = "smoke", stage = "all", threads = 24, resume = FALSE)
+  opts <- list(sex = "both", stage = "all", threads = 24, resume = FALSE)
   i <- 1
   while (i <= length(args)) {
     if (args[i] == "--sex") { opts$sex <- args[i + 1]; i <- i + 2 }
-    else if (args[i] == "--mode") { opts$mode <- args[i + 1]; i <- i + 2 }
+    else if (args[i] == "--mode") {
+      # Accepted but ignored; kept for backward compatibility with old launch scripts.
+      i <- i + 2
+    }
     else if (args[i] == "--stage") { opts$stage <- args[i + 1]; i <- i + 2 }
     else if (args[i] == "--threads") { opts$threads <- as.integer(args[i + 1]); i <- i + 2 }
     else if (args[i] == "--resume") { opts$resume <- TRUE; i <- i + 1 }
@@ -15,7 +18,6 @@ parse_args <- function(args) {
       cat("Usage: Rscript scripts/run_pipeline.R [options]\n\n")
       cat("Options:\n")
       cat("  --sex       male|female|both  (default: both)\n")
-      cat("  --mode      smoke|full        (default: smoke)\n")
       cat("  --stage     all|<name>[,<name>...]  e.g. 'gwas,vcf,plots' (default: all)\n")
       cat("              names: munge|ldsc|efa|cfa|sumstats|gwas|vcf|factor_summary|plots|comparison|report\n")
       cat("  --threads   N                 (default: 24)\n")
@@ -66,7 +68,7 @@ source("R/10_plots.R")
 source("R/11_factor_summary.R")
 
 config <- read_config("config/pipeline.yaml", root = project_root)
-config <- setup_pipeline(config, sex = opts$sex, mode = opts$mode, threads = opts$threads)
+config <- setup_pipeline(config, sex = opts$sex, threads = opts$threads)
 
 sexes <- if (opts$sex == "both") c("male", "female") else opts$sex
 all_stages <- c("munge", "ldsc", "efa", "cfa", "sumstats", "gwas", "vcf",
@@ -82,10 +84,16 @@ should_run <- function(stage_name) {
 should_skip <- function(stage_name, sex_val) {
   if (!opts$resume) return(FALSE)
   manifest <- read_stage_manifest(stage_name, sex_val, config)
-  # %||% list() (not %||% config): stages without a YAML block hash to a stable empty
-  # constant rather than the whole config, so unrelated key edits don't invalidate.
-  config_hash <- digest::digest(config[[stage_name]] %||% list(), algo = "sha256")
-  fresh <- stage_is_fresh(manifest, config_hash)
+  # Current hash: stage block + paths (so a path edit correctly invalidates).
+  current_hash <- digest::digest(
+    list(stage = config[[stage_name]] %||% list(), paths = config$paths),
+    algo = "sha256")
+  # Legacy hash: stage block only (pre-paths-in-hash convention). Manifests
+  # written under the old scheme still validate so users don't lose hours
+  # of upstream work the first time they pull the new code.
+  legacy_hash <- digest::digest(config[[stage_name]] %||% list(), algo = "sha256")
+  fresh <- stage_is_fresh(manifest, current_hash) ||
+           stage_is_fresh(manifest, legacy_hash)
   if (fresh) {
     log_info("setup", sprintf("--resume: %s/%s manifest fresh; skipping", stage_name, sex_val))
   }
