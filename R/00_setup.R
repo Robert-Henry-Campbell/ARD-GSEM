@@ -77,13 +77,14 @@ validate_reference <- function(config, sexes = c("male", "female")) {
     }
   }
 
-  tg <- config$paths$thousand_g_plink
+  tg <- config$paths$thousand_g_reference %||% config$paths$thousand_g_plink
   if (!is.null(tg) && nzchar(tg)) {
-    if (!dir.exists(tg) || length(list.files(tg, pattern = "\\.bed$")) == 0L) {
+    if (!file.exists(tg)) {
       log_warn("setup", sprintf(
-        "1000G PLINK reference not found or empty: %s (sumstats/gwas/vcf stages will fail)", tg))
+        "1000G reference file not found: %s (sumstats/gwas/vcf stages will fail). Download from https://utexas.box.com/s/vkd36n197m8klbaio3yzoxsee6sxo11v",
+        tg))
     } else {
-      log_info("setup", sprintf("1000G PLINK reference present: %s", tg))
+      log_info("setup", sprintf("1000G reference file present: %s", tg))
     }
   }
 

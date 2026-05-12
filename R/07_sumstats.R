@@ -1,18 +1,15 @@
-resolve_1000g_prefix <- function(dir_path) {
-  if (!dir.exists(dir_path)) {
-    log_fatal("sumstats", sprintf("1000G PLINK reference dir not found: %s", dir_path))
+resolve_1000g_reference <- function(path) {
+  # GenomicSEM::sumstats() reads `ref` via fread() as a single tab-delimited file
+  # (typically reference.1000G.maf.0.005.txt -- SNP, A1, A2, MAF columns).
+  # It is NOT a PLINK .bed/.bim/.fam prefix. fread() transparently decompresses .gz.
+  candidates <- unique(c(path, paste0(path, ".gz"), sub("\\.gz$", "", path)))
+  hit <- candidates[file.exists(candidates)][1]
+  if (is.na(hit)) {
+    log_fatal("sumstats",
+              sprintf("1000G reference file not found (tried: %s)",
+                      paste(candidates, collapse = ", ")))
   }
-  bed_files <- list.files(dir_path, pattern = "\\.bed$", full.names = TRUE)
-  if (length(bed_files) == 0L) {
-    log_fatal("sumstats", sprintf("No .bed file found in 1000G PLINK dir: %s", dir_path))
-  }
-  prefixes <- unique(sub("\\.bed$", "", bed_files))
-  if (length(prefixes) != 1L) {
-    log_fatal("sumstats", sprintf(
-      "Expected exactly one .bed/.bim/.fam trio in %s, found %d candidate prefix(es)",
-      dir_path, length(prefixes)))
-  }
-  prefixes[1L]
+  normalizePath(hit, winslash = "/", mustWork = TRUE)
 }
 
 run_sumstats <- function(config, sex) {
@@ -50,8 +47,9 @@ run_sumstats <- function(config, sex) {
   log_info("sumstats", sprintf(
     "Input scale: log(OR) (converted at munge time). se.logit=TRUE, OLS=FALSE, linprob=FALSE."))
 
-  ref_prefix <- resolve_1000g_prefix(config$paths$thousand_g_plink)
-  log_info("sumstats", sprintf("1000G reference prefix: %s", ref_prefix))
+  ref_path <- resolve_1000g_reference(
+    config$paths$thousand_g_reference %||% config$paths$thousand_g_plink)
+  log_info("sumstats", sprintf("1000G reference file: %s", ref_path))
 
   out_dir <- file.path(config$paths$output_dir, sex, "sumstats")
   dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
@@ -65,7 +63,7 @@ run_sumstats <- function(config, sex) {
     setwd(out_dir)
     GenomicSEM::sumstats(
       files = files_abs,
-      ref = ref_prefix,
+      ref = ref_path,
       trait.names = retained,
       se.logit = rep(TRUE, length(retained)),
       OLS = rep(FALSE, length(retained)),
