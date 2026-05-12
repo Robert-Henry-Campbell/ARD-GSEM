@@ -11,3 +11,4 @@ renv/python/
 manifest/variants.tsv.bgz
 manifest/*.rda
 meta/*.rda
+.claude/worktrees/
