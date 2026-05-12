@@ -31,6 +31,10 @@ run_ldsc <- function(config, sex) {
   dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
   munged_files_abs <- normalizePath(munged_files, mustWork = TRUE)
   saved_wd <- getwd()
+  # stand = FALSE: the V_Stand (standardised V) assembly inside GenomicSEM::ldsc() can
+  # bail with "object 'V_Stand' not found" when any per-trait h2 point estimate is
+  # negative (an edge case on small / under-powered sets). We don't consume V_Stand
+  # anywhere downstream -- usermodel() and userGWAS() use the unstandardised S, V, I.
   ldsc_output <- tryCatch({
     setwd(out_dir)
     GenomicSEM::ldsc(
@@ -40,7 +44,7 @@ run_ldsc <- function(config, sex) {
       ld = ld_path,
       wld = wld_path,
       trait.names = trait_names,
-      stand = TRUE
+      stand = FALSE
     )
   }, finally = setwd(saved_wd))
 

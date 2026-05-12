@@ -261,7 +261,14 @@ check_polarity_sentinel <- function(dt, sentinel_rsid = NULL, expected_a1 = NULL
 # --- A Priori Model Building ---
 
 build_apriori_model <- function(traits, categories, min_indicators = 2) {
-  stopifnot(all(nchar(traits) == 3L))
+  bad_nchar <- nchar(traits) != 3L
+  if (any(bad_nchar)) {
+    log_warn("cfa", sprintf(
+      "build_apriori_model: dropping %d non-3-char trait(s): %s",
+      sum(bad_nchar), paste(traits[bad_nchar], collapse = ", ")))
+    traits <- traits[!bad_nchar]
+  }
+  if (length(traits) == 0L) return("")
   mapping <- categories[code %in% traits, .(code, chapter)]
   unmapped <- setdiff(traits, mapping$code)
   if (length(unmapped) > 0) {

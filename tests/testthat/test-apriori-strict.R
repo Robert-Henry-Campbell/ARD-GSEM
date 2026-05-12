@@ -1,7 +1,12 @@
-test_that("build_apriori_model asserts 3-character trait codes", {
+test_that("build_apriori_model drops non-3-char traits with a warning, keeps the rest", {
   categories <- data.table(code = c("D50", "D64"), chapter = c("Blood", "Blood"))
-  expect_error(build_apriori_model(c("D50", "D6"), categories), "nchar")
-  expect_error(build_apriori_model(c("D50", "D6400"), categories), "nchar")
+  # The non-3-char ones are dropped; the 3-char ones still build a model.
+  m <- build_apriori_model(c("D50", "D6", "D64", "D6400"), categories)
+  expect_match(m, "D50")
+  expect_match(m, "D64")
+  expect_no_match(m, "D6400")
+  # Only non-3-char input -> empty model (no factors).
+  expect_equal(build_apriori_model(c("D6", "D6400"), categories), "")
 })
 
 test_that("no first-letter fallback: unmapped D50 does NOT fall into a 'D' chapter", {

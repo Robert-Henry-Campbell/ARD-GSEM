@@ -112,7 +112,11 @@ tryCatch({
         h2 <- fread(file.path(config$paths$output_dir, sex, "ldsc", "h2_qc.csv"))
         n_valid <- sum(h2$pass)
         if (n_valid >= 3) {
-          run_efa(config, sex)
+          tryCatch(run_efa(config, sex),
+                   error = function(e) {
+                     log_error("efa", sprintf("EFA failed for %s: %s (continuing; apriori CFA does not depend on EFA)",
+                                              sex, conditionMessage(e)))
+                   })
         } else {
           log_warn("efa", sprintf("Skipping EFA for %s: only %d valid traits (need >=3)", sex, n_valid))
         }

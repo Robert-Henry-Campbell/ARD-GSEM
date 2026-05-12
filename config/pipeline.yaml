@@ -22,10 +22,9 @@ munge:
   # extreme K for SNPs with non-trivial effect; warn at 1%% by default.
   K_warn_threshold: 0.01
   K_reject_threshold: 1.0e-9
-  # Set to null to skip the polarity check.
-  polarity_sentinel:
-    rsid: rs568226429
-    a1: A
+  # Polarity check disabled: the previous sentinel rs568226429 is not in HM3 so the
+  # check never fired. Set to a real {rsid, a1} pair to re-enable.
+  polarity_sentinel: null
 
 ldsc:
   h2_z_threshold: 2.0
