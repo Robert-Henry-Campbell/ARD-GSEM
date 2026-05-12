@@ -4,7 +4,7 @@ source(file.path(project_root, "R/11_factor_summary.R"))
 
 test_that("compute_lambda_gc returns ~1 for uniform p-values", {
   set.seed(1)
-  p <- runif(5000)
+  p <- runif(50000)
   expect_equal(compute_lambda_gc(p), 1, tolerance = 0.05)
 })
 

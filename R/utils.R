@@ -178,17 +178,22 @@ count_gz_lines <- function(path, chunk = 10000L) {
 # --- Variant Parsing ---
 
 parse_variant_column <- function(dt) {
-  parts <- data.table::tstrsplit(dt$variant, ":", fixed = TRUE)
-  if (length(parts) != 4L) {
+  # Count colons per row first: tstrsplit pads short rows with NA up to the max field
+  # count across the table, so a length-based check on its output would let a short
+  # row slip through and fail later with a misleading "NA/empty" message.
+  n_colons <- nchar(dt$variant) - nchar(gsub(":", "", dt$variant, fixed = TRUE))
+  wrong_count <- n_colons != 3L
+  if (any(wrong_count)) {
     stop(sprintf(
-      "parse_variant_column: expected chr:pos:ref:alt (4 fields), got %d-field variants",
-      length(parts)))
+      "parse_variant_column: expected chr:pos:ref:alt (4 fields, 3 colons); %d row(s) had a different colon count. sample bad row: %s",
+      sum(wrong_count), dt$variant[which(wrong_count)[1]]))
   }
-  bad <- vapply(parts, function(p) any(is.na(p) | !nzchar(p)), logical(1))
-  if (any(bad)) {
+  parts <- data.table::tstrsplit(dt$variant, ":", fixed = TRUE)
+  empty_mask <- Reduce(`|`, lapply(parts, function(p) is.na(p) | !nzchar(p)))
+  if (any(empty_mask)) {
     stop(sprintf(
-      "parse_variant_column: %d variant column(s) have NA/empty entries; sample row: %s",
-      sum(bad), dt$variant[which(is.na(parts[[1]]) | !nzchar(parts[[1]]))[1]]))
+      "parse_variant_column: %d row(s) have NA/empty fields; sample row: %s",
+      sum(empty_mask), dt$variant[which(empty_mask)[1]]))
   }
   dt[, `:=`(chr = parts[[1]], pos = as.integer(parts[[2]]),
             ref = parts[[3]], alt = parts[[4]])]
