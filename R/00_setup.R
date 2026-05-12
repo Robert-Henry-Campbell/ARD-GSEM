@@ -13,6 +13,7 @@ setup_pipeline <- function(config, sex = "both", mode = "smoke", threads = NULL)
   log_info("setup", sprintf("Config: %s", config$project$name))
   log_info("setup", sprintf("Threads: %d | Mode: %s | Sex: %s",
                             config$parallel$n_workers, mode, sex))
+  report_tempdir()
 
   sexes <- if (sex == "both") c("male", "female") else sex
   validate_reference(config, sexes)
@@ -37,6 +38,29 @@ setup_pipeline <- function(config, sex = "both", mode = "smoke", threads = NULL)
              recursive = TRUE, showWarnings = FALSE)
 
   config
+}
+
+report_tempdir <- function(warn_threshold_gb = 50) {
+  td <- tempdir()
+  td_env <- Sys.getenv("TMPDIR", unset = NA)
+  avail_gb <- tryCatch({
+    out <- suppressWarnings(system2(
+      "df", c("-B1", "--output=avail", shQuote(td)),
+      stdout = TRUE, stderr = FALSE))
+    if (length(out) >= 2L) as.numeric(out[2]) / 1024^3 else NA_real_
+  }, error = function(e) NA_real_)
+  env_str <- if (is.na(td_env) || !nzchar(td_env)) "(TMPDIR env unset)"
+             else sprintf("TMPDIR=%s", td_env)
+  if (is.na(avail_gb)) {
+    log_info("setup", sprintf("R tempdir: %s  [%s; free space: unknown]", td, env_str))
+  } else if (avail_gb < warn_threshold_gb) {
+    log_warn("setup", sprintf(
+      "R tempdir: %s  [%s; only %.1f GB free]. fread of Neale bgz files needs ~1-2 GB per trait. If munge fails with 'External command failed' / 'disk is full in the temporary directory', launch R with TMPDIR=/path/on/big/mount Rscript ...",
+      td, env_str, avail_gb))
+  } else {
+    log_info("setup", sprintf("R tempdir: %s  [%s; %.1f GB free]",
+                              td, env_str, avail_gb))
+  }
 }
 
 validate_reference <- function(config, sexes = c("male", "female")) {
