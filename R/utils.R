@@ -395,8 +395,8 @@ verify_genome_build <- function(dt, expected, build_label = "GRCh37") {
       "verify_genome_build (%s): %d coordinate mismatch(es) -- %s",
       build_label, length(mismatches), paste(mismatches, collapse = "; ")))
   }
-  log_info("munge", sprintf("verify_genome_build (%s): all %d seed SNP(s) at expected coordinates",
-                            build_label, nrow(hits)))
+  log_debug("munge", sprintf("verify_genome_build (%s): all %d seed SNP(s) at expected coordinates",
+                             build_label, nrow(hits)))
   invisible(TRUE)
 }
 

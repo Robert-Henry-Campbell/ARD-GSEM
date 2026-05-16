@@ -11,7 +11,7 @@ test_that("config has expected default values", {
   cfg <- read_config(file.path(project_root, "config/pipeline.yaml"),
                      root = project_root)
   expect_equal(cfg$parallel$n_workers, 24)
-  expect_equal(cfg$ldsc$h2_z_threshold, 2.0)
+  expect_equal(cfg$ldsc$h2_z_threshold, 4.0)
   expect_equal(cfg$munge$maf_threshold, 0.01)
   expect_equal(cfg$efa$rotation, "geomin")
   expect_equal(cfg$cfa$estimator, "DWLS")
