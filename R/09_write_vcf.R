@@ -110,27 +110,38 @@ write_gwas_vcf <- function(gwas_list, snp_sumstats, output_path, metadata) {
                               integer(1))
   names(n_fail_by_factor) <- factor_names
 
+  nhat_maf <- metadata$nhat_maf_threshold %||% 0.10
+  nhat_by_factor <- vapply(per_factor, function(g) {
+    compute_factor_nhat(g$AF, g$SE, maf_threshold = nhat_maf)
+  }, numeric(1))
+  names(nhat_by_factor) <- factor_names
+  if (is.null(metadata$neff_by_factor)) metadata$neff_by_factor <- as.list(nhat_by_factor)
+
   hdr <- c(
     "##fileformat=VCFv4.2",
     sprintf("##fileDate=%s", format(Sys.Date(), "%Y%m%d")),
     sprintf("##source=ARD-GSEM_pipeline_v1"),
     sprintf("##gsem_scale=log_odds_ratio"),
-    sprintf("##gsem_source=Neale_UKBB_round2_linear_regression_converted"),
-    sprintf("##gsem_conversion=beta_logOR_eq_beta_linear_div_K_times_1_minus_K"),
+    sprintf("##gsem_source=Neale_UKBB_round2_linear_regression"),
+    sprintf("##gsem_conversion=GenomicSEM_sumstats_linprob_TRUE"),
     sprintf("##gsem_identification=%s",
             if (isTRUE(metadata$std_lv)) "std.lv (factor variance fixed to 1; SNP betas per-SD-of-factor)"
-            else "marker-variable (first indicator loading fixed to 1)"),
+            else "marker-variable (first indicator loading fixed to 1; SNP betas in units of the first indicator)"),
     sprintf("##gsem_model=one_factor_per_ICD10_chapter"),
     sprintf("##gsem_sex=%s", metadata$sex),
     sprintf("##gsem_genome_build=%s", metadata$genome_build %||% "GRCh37"),
     sprintf("##gsem_study_id_prefix=%s", metadata$study_id_prefix %||% "ARD-GSEM"),
-    sprintf("##gsem_n_factors=%d", length(factor_names))
+    sprintf("##gsem_n_factors=%d", length(factor_names)),
+    sprintf("##gsem_nhat_formula=mean(1/((2*MAF*(1-MAF))*SE^2))_at_MAF_geq_%.2f", nhat_maf)
   )
   for (f in factor_names) {
     hdr <- c(hdr,
              sprintf("##gsem_lambda_gc_%s=%s", f,
                      if (is.na(lambda_by_factor[[f]])) "NA" else
-                       formatC(lambda_by_factor[[f]], format = "f", digits = 4)))
+                       formatC(lambda_by_factor[[f]], format = "f", digits = 4)),
+             sprintf("##gsem_nhat_%s=%s", f,
+                     if (is.na(nhat_by_factor[[f]])) "NA" else
+                       formatC(nhat_by_factor[[f]], format = "f", digits = 1)))
     if (!is.na(n_fail_by_factor[[f]]) && n_fail_by_factor[[f]] > 0L) {
       hdr <- c(hdr, sprintf("##gsem_n_sem_fail_%s=%d", f, n_fail_by_factor[[f]]))
     }
@@ -213,6 +224,7 @@ write_gwas_vcf <- function(gwas_list, snp_sumstats, output_path, metadata) {
     n_factors = length(factor_names),
     n_sem_fail = n_fail_by_factor,
     lambda_gc = lambda_by_factor,
+    nhat_by_factor = nhat_by_factor,
     indexed = indexed
   )
 }
@@ -252,7 +264,8 @@ run_write_vcf <- function(config, sex) {
     sex = sex,
     genome_build = config$gwas$genome_build %||% "GRCh37",
     study_id_prefix = config$gwas$study_id_prefix %||% "ARD-GSEM",
-    std_lv = isTRUE(config$gwas$std_lv %||% TRUE),
+    std_lv = isTRUE(config$gwas$std_lv %||% FALSE),
+    nhat_maf_threshold = config$gwas$nhat_maf_threshold %||% 0.10,
     neff_by_factor = NULL
   )
 
@@ -265,8 +278,10 @@ run_write_vcf <- function(config, sex) {
   }
   for (f in names(res$lambda_gc)) {
     nf <- res$n_sem_fail[[f]]
-    log_info("vcf", sprintf("  factor %s: lambda_GC = %.4f, SEM_fail = %d",
+    nh <- res$nhat_by_factor[[f]]
+    log_info("vcf", sprintf("  factor %s: lambda_GC = %.4f, N_hat = %s, SEM_fail = %d",
                              f, res$lambda_gc[[f]],
+                             if (is.na(nh)) "NA" else format(round(nh), big.mark = ","),
                              if (is.na(nf)) 0L else nf))
   }
 

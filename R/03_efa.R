@@ -40,9 +40,32 @@ run_efa <- function(config, sex, ldsc_results = NULL) {
 
   n_factors <- 1
   if (nrow(rg) >= 4 && config$efa$use_parallel_analysis) {
-    pa <- psych::fa.parallel(rg, n.obs = n_obs, fa = "fa", fm = "ml",
-                             plot = FALSE, n.iter = 20)
-    n_factors <- max(1, pa$nfact)
+    if (!is.null(ldsc_results) && !is.null(ldsc_results$ldsc_output)) {
+      pa_covstruc <- ldsc_results$ldsc_output
+    } else {
+      pa_covstruc <- readRDS(file.path(config$paths$output_dir, sex, "ldsc", "ldsc_full.rds"))
+    }
+    n_factors <- tryCatch({
+      # Signature unknown in advance; try defaults first. Confirm on doraemon6
+      # via ?GenomicSEM::paLDSC and adjust args if the function takes named iters.
+      pa <- GenomicSEM::paLDSC(covstruc = pa_covstruc)
+      pa_n <- if (is.list(pa) && !is.null(pa$nfact)) pa$nfact
+              else if (is.list(pa) && !is.null(pa$n_factors)) pa$n_factors
+              else if (is.numeric(pa) && length(pa) == 1L) as.integer(pa)
+              else NA_integer_
+      if (is.na(pa_n) || pa_n < 1L) {
+        stop(sprintf("paLDSC returned no usable factor count (class=%s)", class(pa)[1]))
+      }
+      log_info("efa", sprintf("paLDSC suggested %d factor(s)", as.integer(pa_n)))
+      max(1L, as.integer(pa_n))
+    }, error = function(e) {
+      log_warn("efa", sprintf(
+        "GenomicSEM::paLDSC unavailable/failed (%s); falling back to psych::fa.parallel on rg",
+        conditionMessage(e)))
+      pa <- psych::fa.parallel(rg, n.obs = n_obs, fa = "fa", fm = "ml",
+                               plot = FALSE, n.iter = 20)
+      max(1L, as.integer(pa$nfact))
+    })
   } else if (nrow(rg) == 3) {
     n_factors <- 1
   }

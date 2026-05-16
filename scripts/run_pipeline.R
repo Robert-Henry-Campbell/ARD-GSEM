@@ -1,9 +1,19 @@
 #!/usr/bin/env Rscript
 
+# GenomicSEM wiki 1.1: on Linux with implicit OpenBLAS / OMP threading, the
+# foreach cluster spawns cores * BLAS_threads tasks -> CPU congestion. Pin to 1
+# before any package load. Up to 28x speedup on a 24-core machine.
+Sys.setenv(OPENBLAS_NUM_THREADS = "1",
+           OMP_NUM_THREADS = "1",
+           MKL_NUM_THREADS = "1",
+           NUMEXPR_NUM_THREADS = "1",
+           VECLIB_MAXIMUM_THREADS = "1")
+
 args <- commandArgs(trailingOnly = TRUE)
 
 parse_args <- function(args) {
-  opts <- list(sex = "both", stage = "all", threads = 24, resume = FALSE)
+  opts <- list(sex = "both", stage = "all", threads = 24, resume = FALSE,
+               config = "config/pipeline.yaml")
   i <- 1
   while (i <= length(args)) {
     if (args[i] == "--sex") { opts$sex <- args[i + 1]; i <- i + 2 }
@@ -14,13 +24,15 @@ parse_args <- function(args) {
     else if (args[i] == "--stage") { opts$stage <- args[i + 1]; i <- i + 2 }
     else if (args[i] == "--threads") { opts$threads <- as.integer(args[i + 1]); i <- i + 2 }
     else if (args[i] == "--resume") { opts$resume <- TRUE; i <- i + 1 }
+    else if (args[i] == "--config") { opts$config <- args[i + 1]; i <- i + 2 }
     else if (args[i] == "--help" || args[i] == "-h") {
       cat("Usage: Rscript scripts/run_pipeline.R [options]\n\n")
       cat("Options:\n")
       cat("  --sex       male|female|both  (default: both)\n")
       cat("  --stage     all|<name>[,<name>...]  e.g. 'gwas,vcf,plots' (default: all)\n")
-      cat("              names: munge|ldsc|efa|cfa|sumstats|gwas|vcf|factor_summary|plots|comparison|report\n")
+      cat("              names: munge|ldsc|efa|cfa|sumstats|gwas|vcf|factor_ldsc|qc_filters|split_vcf|factor_summary|plots|comparison|report\n")
       cat("  --threads   N                 (default: 24)\n")
+      cat("  --config    path to YAML config (default: config/pipeline.yaml)\n")
       cat("  --resume    Skip stages with valid output manifests\n")
       cat("  --help      Show this message\n")
       quit(status = 0)
@@ -62,16 +74,21 @@ source("R/04_cfa.R")
 source("R/05_comparison.R")
 source("R/06_report.R")
 source("R/07_sumstats.R")
+source("R/07b_gwas_smoke.R")
 source("R/08_gwas.R")
 source("R/09_write_vcf.R")
 source("R/10_plots.R")
 source("R/11_factor_summary.R")
+source("R/12_factor_ldsc.R")
+source("R/13_qc_filters.R")
+source("R/14_split_vcf.R")
 
-config <- read_config("config/pipeline.yaml", root = project_root)
+config <- read_config(opts$config, root = project_root)
 config <- setup_pipeline(config, sex = opts$sex, threads = opts$threads)
 
 sexes <- if (opts$sex == "both") c("male", "female") else opts$sex
 all_stages <- c("munge", "ldsc", "efa", "cfa", "sumstats", "gwas", "vcf",
+                "factor_ldsc", "qc_filters", "split_vcf",
                 "factor_summary", "comparison", "plots", "report")
 stages <- if (opts$stage == "all") all_stages else strsplit(opts$stage, ",", fixed = TRUE)[[1L]]
 unknown <- setdiff(stages, all_stages)
@@ -146,13 +163,34 @@ tryCatch({
 
   if (should_run("gwas")) {
     for (sex in sexes) {
-      if (!should_skip("gwas", sex)) run_gwas(config, sex)
+      if (!should_skip("gwas", sex)) {
+        run_gwas_smoke(config, sex)
+        run_gwas(config, sex)
+      }
     }
   }
 
   if (should_run("vcf")) {
     for (sex in sexes) {
       if (!should_skip("vcf", sex)) run_write_vcf(config, sex)
+    }
+  }
+
+  if (should_run("factor_ldsc")) {
+    for (sex in sexes) {
+      if (!should_skip("factor_ldsc", sex)) run_factor_ldsc(config, sex)
+    }
+  }
+
+  if (should_run("qc_filters")) {
+    for (sex in sexes) {
+      if (!should_skip("qc_filters", sex)) run_qc_filters(config, sex)
+    }
+  }
+
+  if (should_run("split_vcf")) {
+    for (sex in sexes) {
+      if (!should_skip("split_vcf", sex)) run_split_vcf(config, sex)
     }
   }
 

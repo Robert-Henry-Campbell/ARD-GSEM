@@ -15,12 +15,28 @@ run_ldsc <- function(config, sex) {
   log_info("ldsc", sprintf("Running LDSC for %s (%d traits: %s)",
                            sex, length(trait_names), paste(trait_names, collapse = ", ")))
 
-  sample_prevs <- vapply(trait_names, function(trait) {
-    cc <- get_case_control(config, sex, trait)
-    cc$n_cases / (cc$n_cases + cc$n_controls)
-  }, numeric(1))
+  sample_prevs <- rep(0.5, length(trait_names))
 
-  pop_prevs <- rep(NA, length(trait_names))
+  pop_prev_source <- config$ldsc$pop_prev_source %||% "ukb_cohort"
+  if (isTRUE(config$ldsc$liability_scale) && identical(pop_prev_source, "ukb_cohort")) {
+    pop_prevs <- vapply(trait_names, function(trait) {
+      cc <- get_case_control(config, sex, trait)
+      cc$n_cases / (cc$n_cases + cc$n_controls)
+    }, numeric(1))
+    log_info("ldsc", sprintf(
+      "population.prev sourced from UKB cohort case fraction (proxy for K_pop; see methods caveat)"))
+  } else {
+    pop_prev_csv <- file.path(config$paths$meta_dir,
+                              sprintf("ukb_pop_prev_%s.csv", sex))
+    if (file.exists(pop_prev_csv)) {
+      kp <- fread(pop_prev_csv)
+      pop_prevs <- kp$K_pop[match(trait_names, kp$code)]
+      log_info("ldsc", sprintf("population.prev loaded from %s", basename(pop_prev_csv)))
+    } else {
+      pop_prevs <- rep(NA_real_, length(trait_names))
+      log_warn("ldsc", "population.prev=NA for all traits (observed-scale h2)")
+    }
+  }
 
   ld_path <- config$paths$ld_scores
   wld_path <- config$paths$ld_scores
@@ -31,12 +47,9 @@ run_ldsc <- function(config, sex) {
   dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
   munged_files_abs <- normalizePath(munged_files, mustWork = TRUE)
   saved_wd <- getwd()
-  # stand = FALSE: the V_Stand (standardised V) assembly inside GenomicSEM::ldsc() can
-  # bail with "object 'V_Stand' not found" when any per-trait h2 point estimate is
-  # negative (an edge case on small / under-powered sets). We don't consume V_Stand
-  # anywhere downstream -- usermodel() and userGWAS() use the unstandardised S, V, I.
-  ldsc_output <- tryCatch({
-    setwd(out_dir)
+  # Attempt stand=TRUE for standardized loadings (S_Stand / V_Stand). On the V_Stand
+  # crash (occurs when any h2 estimate is near-zero / negative), fall back to FALSE.
+  call_ldsc <- function(stand_flag) {
     GenomicSEM::ldsc(
       traits = munged_files_abs,
       sample.prev = sample_prevs,
@@ -44,8 +57,24 @@ run_ldsc <- function(config, sex) {
       ld = ld_path,
       wld = wld_path,
       trait.names = trait_names,
-      stand = FALSE
+      stand = stand_flag
     )
+  }
+  ldsc_output <- tryCatch({
+    setwd(out_dir)
+    log_info("ldsc", "Attempting GenomicSEM::ldsc(stand=TRUE) ...")
+    out <- tryCatch(call_ldsc(TRUE), error = function(e) {
+      log_warn("ldsc", sprintf(
+        "stand=TRUE failed (%s); falling back to stand=FALSE",
+        conditionMessage(e)))
+      call_ldsc(FALSE)
+    })
+    if (!is.null(out$S_Stand) && !is.null(out$V_Stand)) {
+      log_info("ldsc", "stand=TRUE succeeded; S_Stand + V_Stand available")
+    } else {
+      log_warn("ldsc", "stand path completed without S_Stand/V_Stand; loadings reported on raw scale")
+    }
+    out
   }, finally = setwd(saved_wd))
 
   S <- ldsc_output$S
@@ -114,6 +143,12 @@ run_ldsc <- function(config, sex) {
                              frob_delta, smoothed_result$iterations))
     log_warn("ldsc",
              "PSD smoothing applied to S only; V (sampling-covariance matrix of vech(S)) is unchanged. Downstream sandwich SEs in userGWAS may be slightly biased -- see GenomicSEM wiki on Matrix::nearPD use.")
+    halt_thresh <- config$munge$smoothing_frob_halt %||% 0.025
+    if (frob_delta > halt_thresh) {
+      log_fatal("ldsc", sprintf(
+        "Frobenius-norm smoothing delta %.4g > halt threshold %.4g (Wiki 3). Raise h2_z_threshold or remove underpowered traits.",
+        frob_delta, halt_thresh))
+    }
     smoothed <- TRUE
   }
 
@@ -134,6 +169,15 @@ run_ldsc <- function(config, sex) {
   if (smoothed) {
     ldsc_output$S[keep_idx, keep_idx] <- S_filtered
   }
+
+  categories <- fread(file.path(config$paths$meta_dir, "icd10_categories.csv"))
+  survival <- check_chapter_survival(
+    retained, categories,
+    min_indicators = config$cfa$min_indicators_per_factor %||% 3L,
+    min_factors_required = config$ldsc$min_factors_required %||% 3L)
+  fwrite(data.table(chapter = names(survival$counts),
+                    n_retained = as.integer(survival$counts)),
+         file.path(out_dir, "chapter_survival.csv"))
 
   saveRDS(ldsc_output, file.path(out_dir, "ldsc_full.rds"))
   saveRDS(S, file.path(out_dir, "S.rds"))

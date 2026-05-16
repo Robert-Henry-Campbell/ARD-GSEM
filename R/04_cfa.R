@@ -123,6 +123,15 @@ run_cfa <- function(config, sex, ldsc_results = NULL, efa_results = NULL) {
     if (!is.null(sol_ap)) {
       fwrite(as.data.table(sol_ap), file.path(out_dir, "loadings_apriori.csv"))
       log_info("cfa", "Standardized a priori (chapter) loadings saved")
+      factor_loadings <- extract_apriori_loadings(results$apriori_fit, categories)
+      if (!is.null(factor_loadings) && nrow(factor_loadings) > 0L) {
+        fwrite(factor_loadings, file.path(out_dir, "factor_loadings.csv"))
+        log_info("cfa", sprintf(
+          "factor_loadings.csv written (%d indicator rows); will be used by R/08_gwas.R for descending-loading indicator ordering",
+          nrow(factor_loadings)))
+      } else {
+        log_warn("cfa", "extract_apriori_loadings returned empty; userGWAS will fall back to alphabetical ordering")
+      }
     }
   }
 

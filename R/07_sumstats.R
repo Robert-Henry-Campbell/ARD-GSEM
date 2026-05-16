@@ -45,7 +45,7 @@ run_sumstats <- function(config, sex) {
   log_info("sumstats", sprintf("Calling GenomicSEM::sumstats() for %d traits (%s)",
                                 length(retained), paste(retained, collapse = ", ")))
   log_info("sumstats", sprintf(
-    "Input scale: log(OR) (converted at munge time). se.logit=TRUE, OLS=FALSE, linprob=FALSE."))
+    "Input scale: raw Neale linear betas. se.logit=FALSE, OLS=FALSE, linprob=TRUE (GenomicSEM handles the OR conversion internally per Wiki 4 decision tree)."))
 
   ref_path <- resolve_1000g_reference(
     config$paths$thousand_g_reference %||% config$paths$thousand_g_plink)
@@ -65,12 +65,10 @@ run_sumstats <- function(config, sex) {
       files = files_abs,
       ref = ref_path,
       trait.names = retained,
-      se.logit = rep(TRUE, length(retained)),
+      se.logit = rep(FALSE, length(retained)),
       OLS = rep(FALSE, length(retained)),
-      linprob = rep(FALSE, length(retained)),
+      linprob = rep(TRUE, length(retained)),
       N = neffs,
-      betas = "effect",
-      ses = "SE",
       info.filter = 0.6,
       maf.filter = config$munge$maf_threshold,
       keep.indel = FALSE,
@@ -87,11 +85,11 @@ run_sumstats <- function(config, sex) {
   scale_meta <- list(
     scale = "log_odds_ratio",
     source = "Neale UKBB round 2 linear regression on 0/1 phenotype",
-    conversion = "beta_logOR = beta_linear / (K * (1 - K))",
+    conversion = "GenomicSEM::sumstats(linprob=TRUE) internal conversion (Wiki 4 decision tree)",
     sample_prev = setNames(as.list(sample_prev), retained),
     neff = setNames(as.list(neffs), retained),
     sumstats_call = list(
-      se.logit = TRUE, OLS = FALSE, linprob = FALSE,
+      se.logit = FALSE, OLS = FALSE, linprob = TRUE,
       info.filter = 0.6, maf.filter = config$munge$maf_threshold
     )
   )

@@ -32,6 +32,9 @@ run_munge <- function(config, sex) {
       dt[, A1 := alt]
       dt[, A2 := ref]
 
+      verify_genome_build(dt, config$genome_build_check,
+                          build_label = config$gwas$genome_build %||% "GRCh37")
+
       cc <- get_case_control(config, sex, trait)
       neff <- compute_neff(cc$n_cases, cc$n_controls)
 
@@ -49,21 +52,8 @@ run_munge <- function(config, sex) {
 
       K <- cc$n_cases / (cc$n_cases + cc$n_controls)
       log_info("munge", sprintf(
-        "%s %s: Neff=%.0f (cases=%d, controls=%d), K=%.4f -> converting BETA/SE to log(OR) via beta/(K(1-K))",
+        "%s %s: Neff=%.0f (cases=%d, controls=%d), K_sample=%.4f -> raw linear BETA/SE retained; linprob=TRUE handles conversion in sumstats()",
         trait, sex, neff, cc$n_cases, cc$n_controls, K))
-
-      K_warn <- config$munge$K_warn_threshold %||% 0.01
-      K_reject <- config$munge$K_reject_threshold %||% 1e-9
-      conv <- linear_to_logor(beta = dt$beta, se = dt$se, K = K,
-                              reject_threshold = K_reject,
-                              warn_threshold = K_warn)
-      if (isTRUE(conv$warn)) {
-        log_warn("munge", sprintf(
-          "%s %s: K=%.4f outside [%.3f, %.3f]; linear->log(OR) approximation has growing higher-order bias for SNPs with non-trivial effect",
-          trait, sex, K, K_warn, 1 - K_warn))
-        warnings_list <- c(warnings_list, sprintf("%s: K=%.4f extreme", trait, K))
-      }
-      dt[, `:=`(beta = conv$beta, se = conv$se)]
 
       sentinel_cfg <- config$munge$polarity_sentinel
       polarity <- check_polarity_sentinel(dt,

@@ -1,16 +1,34 @@
-test_that("a priori model groups traits by ICD-10 chapter", {
+test_that("a priori model groups traits by ICD-10 chapter (plain core)", {
   traits <- c("D50", "D64", "E10", "E11")
   categories <- data.table(
     code = c("D50", "D64", "E10", "E11"),
     chapter = c("Blood diseases", "Blood diseases", "Endocrine", "Endocrine")
   )
-  model <- build_apriori_model(traits, categories)
+  model <- build_apriori_model(traits, categories,
+                                add_factor_covariances = FALSE,
+                                add_heywood_constraints = FALSE)
   expect_match(model, "D50")
   expect_match(model, "D64")
   expect_match(model, "E10")
   expect_match(model, "E11")
   lines <- strsplit(model, "\n")[[1]]
   expect_equal(length(lines), 2)
+})
+
+test_that("a priori model with defaults adds factor covariances and Heywood constraints", {
+  traits <- c("D50", "D64", "E10", "E11")
+  categories <- data.table(
+    code = c("D50", "D64", "E10", "E11"),
+    chapter = c("Blood_diseases", "Blood_diseases", "Endocrine", "Endocrine")
+  )
+  model <- build_apriori_model(traits, categories)
+  expect_match(model, "Blood_diseases =~")
+  expect_match(model, "Endocrine =~")
+  expect_match(model, "Blood_diseases ~~ Endocrine")
+  for (code in traits) {
+    expect_match(model, sprintf("%s ~~ rv_%s\\*%s", code, code, code))
+    expect_match(model, sprintf("rv_%s > 0\\.001", code))
+  }
 })
 
 test_that("factors with <2 indicators are dropped", {

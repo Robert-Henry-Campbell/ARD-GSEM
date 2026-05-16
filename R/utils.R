@@ -265,7 +265,10 @@ check_polarity_sentinel <- function(dt, sentinel_rsid = NULL, expected_a1 = NULL
 
 # --- A Priori Model Building ---
 
-build_apriori_model <- function(traits, categories, min_indicators = 2) {
+build_apriori_model <- function(traits, categories, min_indicators = 2,
+                                ordering_table = NULL,
+                                add_factor_covariances = TRUE,
+                                add_heywood_constraints = TRUE) {
   bad_nchar <- nchar(traits) != 3L
   if (any(bad_nchar)) {
     log_warn("cfa", sprintf(
@@ -282,10 +285,27 @@ build_apriori_model <- function(traits, categories, min_indicators = 2) {
   }
   if (nrow(mapping) == 0) return("")
 
+  order_codes <- function(codes) {
+    if (!is.null(ordering_table)) {
+      ord <- as.data.table(ordering_table)
+      hit <- ord[code %in% codes]
+      if (nrow(hit) > 0L) {
+        hit <- hit[order(-abs(sort_metric))]
+        ordered <- hit$code
+        # Append any codes missing from ordering_table at the tail in original order.
+        missing <- setdiff(codes, ordered)
+        return(c(ordered, missing))
+      }
+    }
+    sort(codes)
+  }
+
   by_factor <- split(mapping$code, mapping$chapter)
   by_factor <- by_factor[vapply(by_factor, length, integer(1)) >= min_indicators]
 
   if (length(by_factor) == 0) return("")
+
+  by_factor <- lapply(by_factor, order_codes)
 
   factor_names <- vapply(names(by_factor), function(ch) {
     fn <- gsub("[^A-Za-z0-9]", "_", ch)
@@ -293,11 +313,117 @@ build_apriori_model <- function(traits, categories, min_indicators = 2) {
   }, character(1))
   stopifnot(!any(duplicated(factor_names)))
 
-  lines <- mapply(function(fn, codes) {
+  loading_lines <- mapply(function(fn, codes) {
     paste0(fn, " =~ ", paste(codes, collapse = " + "))
   }, factor_names, by_factor, USE.NAMES = FALSE)
 
-  paste(lines, collapse = "\n")
+  parts <- loading_lines
+
+  if (isTRUE(add_factor_covariances) && length(factor_names) >= 2L) {
+    pairs <- combn(factor_names, 2L)
+    cov_lines <- apply(pairs, 2, function(p) sprintf("%s ~~ %s", p[1], p[2]))
+    parts <- c(parts, cov_lines)
+  }
+
+  if (isTRUE(add_heywood_constraints)) {
+    all_codes <- unique(unlist(by_factor, use.names = FALSE))
+    rv_lines <- sprintf("%s ~~ rv_%s*%s", all_codes, all_codes, all_codes)
+    cn_lines <- sprintf("rv_%s > 0.001", all_codes)
+    parts <- c(parts, rv_lines, cn_lines)
+  }
+
+  paste(parts, collapse = "\n")
+}
+
+# --- Chapter-survival pre-check ---
+
+check_chapter_survival <- function(retained, categories,
+                                   min_indicators = 3L,
+                                   min_factors_required = 3L) {
+  cats <- as.data.table(categories)
+  mapping <- cats[code %in% retained, .(code, chapter)]
+  by_chapter <- split(mapping$code, mapping$chapter)
+  counts <- vapply(by_chapter, length, integer(1))
+  surviving <- names(counts)[counts >= min_indicators]
+  dropped <- names(counts)[counts < min_indicators]
+
+  log_info("ldsc", sprintf(
+    "check_chapter_survival: %d/%d chapters have >=%d retained indicators",
+    length(surviving), length(counts), min_indicators))
+
+  for (ch in dropped) {
+    log_warn("ldsc", sprintf(
+      "  chapter dropped: '%s' (only %d retained: %s)",
+      ch, counts[[ch]], paste(by_chapter[[ch]], collapse = ", ")))
+  }
+
+  if (length(surviving) < min_factors_required) {
+    log_fatal("ldsc", sprintf(
+      "check_chapter_survival: only %d chapters survive at min_indicators=%d (need >=%d). Lower the h2_z_threshold or reduce min_indicators_per_factor.",
+      length(surviving), min_indicators, min_factors_required))
+  }
+
+  list(n_surviving = length(surviving),
+       n_dropped = length(dropped),
+       surviving_chapters = surviving,
+       dropped_chapters = dropped,
+       counts = counts)
+}
+
+# --- Genome-build coordinate sanity check ---
+
+verify_genome_build <- function(dt, expected, build_label = "GRCh37") {
+  if (length(expected) == 0L) {
+    log_debug("munge", "verify_genome_build: no expected SNPs configured; skipping")
+    return(invisible(TRUE))
+  }
+  rsids <- vapply(expected, function(e) e$rsid, character(1))
+  hits <- dt[SNP %in% rsids, .(SNP, chr, pos)]
+  mismatches <- character(0)
+  for (e in expected) {
+    row <- hits[SNP == e$rsid]
+    if (nrow(row) == 0L) next
+    if (as.character(row$chr[1]) != as.character(e$chr) ||
+        as.integer(row$pos[1]) != as.integer(e$pos)) {
+      mismatches <- c(mismatches, sprintf(
+        "%s: expected %s:%d, got %s:%d", e$rsid, e$chr, e$pos,
+        row$chr[1], row$pos[1]))
+    }
+  }
+  if (length(mismatches) > 0L) {
+    log_fatal("munge", sprintf(
+      "verify_genome_build (%s): %d coordinate mismatch(es) -- %s",
+      build_label, length(mismatches), paste(mismatches, collapse = "; ")))
+  }
+  log_info("munge", sprintf("verify_genome_build (%s): all %d seed SNP(s) at expected coordinates",
+                            build_label, nrow(hits)))
+  invisible(TRUE)
+}
+
+# --- Standardized loading extraction from usermodel() ---
+
+extract_apriori_loadings <- function(apriori_fit, categories) {
+  sol <- apriori_fit$results
+  if (is.null(sol) || nrow(sol) == 0L) return(NULL)
+  sol <- as.data.table(sol)
+  std_col <- intersect(c("STD_All", "STD_Genotype", "Standardized_Est"), names(sol))[1]
+  if (is.na(std_col)) return(NULL)
+  loadings <- sol[op == "=~", .(factor = lhs, code = rhs,
+                                std_loading = as.numeric(get(std_col)))]
+  if (nrow(loadings) == 0L) return(NULL)
+  cats <- as.data.table(categories)[, .(code, chapter)]
+  out <- merge(loadings, cats, by = "code", all.x = TRUE, sort = FALSE)
+  out[, sort_metric := std_loading]
+  out[, .(code, chapter, factor, std_loading, sort_metric)]
+}
+
+# --- Factor effective sample size (Wiki 4 N_hat) ---
+
+compute_factor_nhat <- function(maf, se, maf_threshold = 0.10) {
+  ok <- !is.na(maf) & !is.na(se) & maf >= maf_threshold &
+        maf <= (1 - maf_threshold) & se > 0
+  if (!any(ok)) return(NA_real_)
+  mean(1 / ((2 * maf[ok] * (1 - maf[ok])) * se[ok]^2))
 }
 
 # --- EFA to lavaan ---

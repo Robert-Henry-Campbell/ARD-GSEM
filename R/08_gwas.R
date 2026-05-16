@@ -41,9 +41,21 @@ run_gwas <- function(config, sex) {
   retained <- fread(h2_path)[pass == TRUE]$trait
 
   categories <- fread(file.path(config$paths$meta_dir, "icd10_categories.csv"))
+  loadings_path <- file.path(config$paths$output_dir, sex, "cfa", "factor_loadings.csv")
+  ordering_table <- if (file.exists(loadings_path)) {
+    log_info("gwas", sprintf("Indicator ordering: descending |std_loading| from %s", loadings_path))
+    fread(loadings_path)
+  } else {
+    log_warn("gwas", sprintf("factor_loadings.csv not found at %s; falling back to alphabetical ordering within each chapter",
+                              loadings_path))
+    NULL
+  }
   apriori_model <- build_apriori_model(
     retained, categories,
-    min_indicators = config$cfa$min_indicators_per_factor)
+    min_indicators = config$cfa$min_indicators_per_factor,
+    ordering_table = ordering_table,
+    add_factor_covariances = TRUE,
+    add_heywood_constraints = TRUE)
   if (nchar(apriori_model) == 0L) {
     log_fatal("gwas", "A priori model is empty; cannot run factor GWAS")
   }
@@ -60,11 +72,19 @@ run_gwas <- function(config, sex) {
                             cores, smooth_check))
   t0 <- Sys.time()
 
-  std_lv <- isTRUE(config$gwas$std_lv %||% TRUE)
-  log_info("gwas", sprintf("userGWAS std.lv=%s (factor variance %s)",
+  std_lv <- isTRUE(config$gwas$std_lv %||% FALSE)
+  log_info("gwas", sprintf("userGWAS std.lv=%s (%s)",
                             std_lv,
-                            if (std_lv) "fixed to 1; SNP betas are per-SD-of-factor"
-                            else "free; SNP betas are in units of the first indicator"))
+                            if (std_lv) "factor variance fixed to 1; SNP betas are per-SD-of-factor"
+                            else "marker-variable identification; first indicator loading fixed to 1; SNP betas in units of the first indicator"))
+
+  fix_measurement <- isTRUE(config$gwas$fix_measurement %||% TRUE)
+  gc_mode <- config$gwas$genomic_control %||% "standard"
+  q_snp_flag <- isTRUE(config$gwas$q_snp %||% TRUE)
+
+  log_info("gwas", sprintf(
+    "userGWAS args: Q_SNP=%s, fix_measurement=%s, GC=%s, smooth_check=%s, std.lv=%s",
+    q_snp_flag, fix_measurement, gc_mode, smooth_check, std_lv))
 
   gwas_result <- GenomicSEM::userGWAS(
     covstruc = ldsc_output,
@@ -76,6 +96,9 @@ run_gwas <- function(config, sex) {
     parallel = TRUE,
     smooth_check = smooth_check,
     std.lv = std_lv,
+    fix_measurement = fix_measurement,
+    GC = gc_mode,
+    Q_SNP = q_snp_flag,
     printwarn = FALSE
   )
 

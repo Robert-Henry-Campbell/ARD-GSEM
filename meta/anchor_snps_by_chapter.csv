@@ -1,0 +1,6 @@
+chapter,rsid,expected_a1,expected_sign,anchor_trait_code,source
+Endocrine_diseases,rs7903146,T,+,E11,Mahajan et al. 2018 T2D (TCF7L2)
+Circulatory,rs10757278,G,+,I25,CARDIoGRAMplusC4D 2015 (9p21)
+Nervous_system,rs429358,C,+,G30,Lambert et al. 2013 AD (APOE-e4)
+Musculoskeletal,rs2476601,A,+,M06,Stahl et al. 2010 RA (PTPN22)
+Digestive,rs2066844,T,+,K50,Jostins et al. 2012 Crohn's (NOD2 R702W)
