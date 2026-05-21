@@ -43,7 +43,7 @@ ldsc:
   h2_z_threshold: 6.0
   liability_scale: true
   pop_prev_source: ukb_cohort
-  min_factors_required: 3
+  min_factors_required: 2
 
 efa:
   rotation: geomin
