@@ -40,7 +40,7 @@ discover:
   sumstats_filename_pattern: "\\.gwas\\.imputed_v3\\."
 
 ldsc:
-  h2_z_threshold: 4.0
+  h2_z_threshold: 6.0
   liability_scale: true
   pop_prev_source: ukb_cohort
   min_factors_required: 3
