@@ -30,7 +30,7 @@ munge:
   polarity_sentinel:
     rsid: rs429358
     a1: C
-  smoothing_frob_halt: 0.025
+  smoothing_frob_halt: 0.05
 
 discover:
   # discover_traits() regex applied to filenames in sumstats/{sex}/.
@@ -40,7 +40,7 @@ discover:
   sumstats_filename_pattern: "\\.gwas\\.imputed_v3\\."
 
 ldsc:
-  h2_z_threshold: 6.0
+  h2_z_threshold: 4.0
   liability_scale: true
   pop_prev_source: ukb_cohort
   min_factors_required: 2
