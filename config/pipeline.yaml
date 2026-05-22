@@ -16,6 +16,28 @@ paths:
   thousand_g_reference: reference/reference.1000G.maf.0.005.txt.gz
   # PLINK bfile prefix (no .bed/.bim/.fam extension) for --clump in post-hoc Q_SNP filter.
   thousand_g_plink_bfile: reference/1000g_plink/EUR
+  panukb_variants_manifest: manifest/full_variant_qc_metrics.txt.bgz
+
+panukb:
+  phenotype_manifest: manifest/panukb_phenotype_manifest.csv
+  ancestry: EUR
+  columns:
+    chr: chr
+    pos: pos
+    ref: ref
+    alt: alt
+    beta: beta_EUR
+    se: se_EUR
+    neglog10_pval: neglog10_pval_EUR
+    low_confidence: low_confidence_EUR
+  variants_columns:
+    chr: chrom
+    pos: pos
+    ref: ref
+    alt: alt
+    rsid: rsid
+    info: info
+    af: af_EUR
 
 munge:
   use_neff: true
@@ -31,6 +53,7 @@ munge:
     rsid: rs429358
     a1: C
   smoothing_frob_halt: 0.05
+  info_threshold: 0.8
 
 discover:
   # discover_traits() regex applied to filenames in sumstats/{sex}/.
@@ -38,6 +61,7 @@ discover:
   # Stored outside config$munge so editing this key doesn't invalidate the munge
   # stage's resume-hash.
   sumstats_filename_pattern: "\\.gwas\\.imputed_v3\\."
+  bothsex_filename_pattern: "^icd10-.*-both_sexes\\.tsv\\.bgz$"
 
 ldsc:
   h2_z_threshold: 4.0
@@ -84,6 +108,7 @@ sumstats:
   # These are large (~250 GB at 230 traits x 2 sexes). Default false so we never
   # delete by surprise; flip on once the run has shipped.
   cleanup_pre_munge: false
+  info_filter: 0.6
 
 genome_build_check:
   - rsid: rs1421085

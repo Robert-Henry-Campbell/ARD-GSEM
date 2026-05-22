@@ -44,8 +44,24 @@ run_sumstats <- function(config, sex) {
 
   log_info("sumstats", sprintf("Calling GenomicSEM::sumstats() for %d traits (%s)",
                                 length(retained), paste(retained, collapse = ", ")))
+
+  is_bothsex <- identical(sex, "bothsex")
+  if (is_bothsex) {
+    se_logit <- rep(TRUE,  length(retained))
+    ols      <- rep(FALSE, length(retained))
+    linprob  <- rep(FALSE, length(retained))
+    source_label <- "Pan-UKB SAIGE on EUR; betas already log(OR)"
+  } else {
+    se_logit <- rep(FALSE, length(retained))
+    ols      <- rep(FALSE, length(retained))
+    linprob  <- rep(TRUE,  length(retained))
+    source_label <- "Neale UKBB round 2 linear regression on 0/1 phenotype"
+  }
   log_info("sumstats", sprintf(
-    "Input scale: raw Neale linear betas. se.logit=FALSE, OLS=FALSE, linprob=TRUE (GenomicSEM handles the OR conversion internally per Wiki 4 decision tree)."))
+    "Input scale: %s. se.logit=%s, OLS=%s, linprob=%s",
+    source_label, all(se_logit), all(ols), all(linprob)))
+
+  info_filter <- config$sumstats$info_filter %||% 0.6
 
   ref_path <- resolve_1000g_reference(
     config$paths$thousand_g_reference %||% config$paths$thousand_g_plink)
@@ -65,11 +81,11 @@ run_sumstats <- function(config, sex) {
       files = files_abs,
       ref = ref_path,
       trait.names = retained,
-      se.logit = rep(FALSE, length(retained)),
-      OLS = rep(FALSE, length(retained)),
-      linprob = rep(TRUE, length(retained)),
+      se.logit = se_logit,
+      OLS = ols,
+      linprob = linprob,
       N = neffs,
-      info.filter = 0.6,
+      info.filter = info_filter,
       maf.filter = config$munge$maf_threshold,
       keep.indel = FALSE,
       parallel = TRUE,
@@ -84,13 +100,14 @@ run_sumstats <- function(config, sex) {
   # for any external consumer that needs to know the units of the VCF effect estimates.
   scale_meta <- list(
     scale = "log_odds_ratio",
-    source = "Neale UKBB round 2 linear regression on 0/1 phenotype",
-    conversion = "GenomicSEM::sumstats(linprob=TRUE) internal conversion (Wiki 4 decision tree)",
+    source = source_label,
+    conversion = if (is_bothsex) "input already log(OR); no internal conversion"
+                 else "GenomicSEM::sumstats(linprob=TRUE) internal conversion (Wiki 4 decision tree)",
     sample_prev = setNames(as.list(sample_prev), retained),
     neff = setNames(as.list(neffs), retained),
     sumstats_call = list(
-      se.logit = FALSE, OLS = FALSE, linprob = TRUE,
-      info.filter = 0.6, maf.filter = config$munge$maf_threshold
+      se.logit = all(se_logit), OLS = all(ols), linprob = all(linprob),
+      info.filter = info_filter, maf.filter = config$munge$maf_threshold
     )
   )
   jsonlite::write_json(scale_meta,

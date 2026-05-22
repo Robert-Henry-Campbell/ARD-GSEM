@@ -231,6 +231,68 @@ map_rsids <- function(sumstats, manifest) {
   result
 }
 
+# --- Pan-UKB variants manifest ---
+
+# Merge a user-supplied column map (from YAML) with defaults, validate that
+# every required key is present after the merge, and return a list keyed by
+# internal-name where values are the source-column names to read from disk.
+# Robust to YAML key reorderings and partial overrides (the original
+# unlist+positional-rename approach silently misaligned columns).
+resolve_column_map <- function(user_map, defaults, label = "column map") {
+  out <- defaults
+  if (!is.null(user_map)) {
+    for (k in names(user_map)) {
+      v <- user_map[[k]]
+      if (!is.null(v) && nzchar(v)) out[[k]] <- v
+    }
+  }
+  missing <- setdiff(names(defaults), names(out))
+  if (length(missing) > 0L) {
+    stop(sprintf("%s missing key(s): %s", label, paste(missing, collapse = ",")),
+         call. = FALSE)
+  }
+  out
+}
+
+load_panukb_variants_manifest <- function(path, cols = NULL) {
+  log_info("munge", "Loading Pan-UKB variants manifest...")
+  defaults <- list(chr = "chrom", pos = "pos", ref = "ref", alt = "alt",
+                   rsid = "rsid", info = "info", af = "af_EUR")
+  internal <- list(chr = "chr", pos = "pos", ref = "ref", alt = "alt",
+                   rsid = "rsid", info = "info", af = "af_EUR")
+  cm <- resolve_column_map(cols, defaults, label = "variants_columns")
+  source_names <- vapply(names(internal), function(k) cm[[k]], character(1))
+  target_names <- vapply(names(internal), function(k) internal[[k]], character(1))
+  classes <- list()
+  classes[[cm$chr]]  <- "character"
+  classes[[cm$rsid]] <- "character"
+  classes[[cm$info]] <- "numeric"
+  classes[[cm$af]]   <- "numeric"
+  vt <- data.table::fread(
+    cmd = paste("zcat", shQuote(path)),
+    select = unname(source_names), colClasses = classes,
+    na.strings = c("", "NA")
+  )
+  data.table::setnames(vt, old = unname(source_names), new = unname(target_names))
+  data.table::setkey(vt, chr, pos, ref, alt)
+  log_debug("munge", sprintf("Pan-UKB variants manifest: %s rows loaded",
+                              format(nrow(vt), big.mark = ",")))
+  vt
+}
+
+merge_panukb_variants <- function(dt, vm) {
+  n_before <- nrow(dt)
+  dt[, chr := as.character(chr)]
+  result <- vm[dt, on = c("chr", "pos", "ref", "alt"), nomatch = NULL]
+  result <- result[!is.na(rsid) & nzchar(rsid)]
+  pct <- if (n_before == 0L) 0 else 100 * nrow(result) / n_before
+  log_info("munge",
+           sprintf("Pan-UKB variant join: %s -> %s variants (%.1f%% matched + rsid'd)",
+                   format(n_before, big.mark = ","),
+                   format(nrow(result), big.mark = ","), pct))
+  result
+}
+
 # --- Filtering ---
 
 filter_variants <- function(dt, maf_threshold = 0.01, info_threshold = NULL) {
@@ -503,6 +565,12 @@ read_stage_manifest <- function(stage, sex, config) {
 
 discover_traits <- function(config, sex) {
   dir_path <- file.path(config$paths$sumstats_dir, sex)
+  if (identical(sex, "bothsex")) {
+    pat <- config$discover$bothsex_filename_pattern %||%
+           "^icd10-.*-both_sexes\\.tsv\\.bgz$"
+    files <- list.files(dir_path, pattern = pat, full.names = FALSE)
+    return(sub("^icd10-(.*)-both_sexes\\.tsv\\.bgz$", "\\1", files))
+  }
   # Filename pattern is config-driven so non-Neale inputs can be plugged in.
   # Stored under config$discover (not config$munge) so the munge stage hash is
   # unaffected by adding/changing this key -- prevents stale-manifest invalidation.
@@ -520,8 +588,11 @@ get_shared_traits <- function(config) {
 # --- Case/Control Lookup ---
 
 get_case_control <- function(config, sex, trait) {
-  manifest_file <- file.path(config$paths$manifest_dir,
-                             paste0("neale_", sex, "_manifest.rda"))
+  manifest_file <- if (identical(sex, "bothsex")) {
+    file.path(config$paths$manifest_dir, "panukb_bothsex_manifest.rda")
+  } else {
+    file.path(config$paths$manifest_dir, paste0("neale_", sex, "_manifest.rda"))
+  }
   env <- new.env()
   load(manifest_file, envir = env)
   objs <- ls(env)

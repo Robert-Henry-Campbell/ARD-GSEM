@@ -12,7 +12,7 @@ Sys.setenv(OPENBLAS_NUM_THREADS = "1",
 args <- commandArgs(trailingOnly = TRUE)
 
 parse_args <- function(args) {
-  opts <- list(sex = "both", stage = "all", threads = 24, resume = FALSE,
+  opts <- list(sex = NULL, stage = "all", threads = 24, resume = FALSE,
                config = "config/pipeline.yaml")
   i <- 1
   while (i <= length(args)) {
@@ -26,9 +26,10 @@ parse_args <- function(args) {
     else if (args[i] == "--resume") { opts$resume <- TRUE; i <- i + 1 }
     else if (args[i] == "--config") { opts$config <- args[i + 1]; i <- i + 2 }
     else if (args[i] == "--help" || args[i] == "-h") {
-      cat("Usage: Rscript scripts/run_pipeline.R [options]\n\n")
+      cat("Usage: Rscript scripts/run_pipeline.R --sex <list> [options]\n\n")
       cat("Options:\n")
-      cat("  --sex       male|female|both  (default: both)\n")
+      cat("  --sex       REQUIRED. Comma-separated subset of {male, female, bothsex}.\n")
+      cat("              e.g. --sex male,female  or  --sex bothsex  or  --sex male,female,bothsex\n")
       cat("  --stage     all|<name>[,<name>...]  e.g. 'gwas,vcf,plots' (default: all)\n")
       cat("              names: munge|ldsc|efa|cfa|sumstats|gwas|vcf|factor_ldsc|qc_filters|split_vcf|factor_summary|plots|comparison|report\n")
       cat("  --threads   N                 (default: 24)\n")
@@ -39,7 +40,31 @@ parse_args <- function(args) {
     }
     else { cat("Unknown argument:", args[i], "\n"); quit(status = 1) }
   }
+  if (is.null(opts$sex) || is.na(opts$sex) || !nzchar(opts$sex)) {
+    stop("--sex is required: comma-separated subset of {male, female, bothsex}.",
+         call. = FALSE)
+  }
   opts
+}
+
+parse_sexes <- function(sex_arg) {
+  valid <- c("male", "female", "bothsex")
+  sexes <- trimws(strsplit(sex_arg, ",", fixed = TRUE)[[1L]])
+  sexes <- sexes[nzchar(sexes)]
+  if (length(sexes) == 0L) {
+    stop("--sex parsed to an empty list", call. = FALSE)
+  }
+  unknown <- setdiff(sexes, valid)
+  if (length(unknown) > 0L) {
+    stop(sprintf("Unknown --sex value(s): %s (valid: %s)",
+                 paste(unknown, collapse = ","),
+                 paste(valid, collapse = ",")), call. = FALSE)
+  }
+  if (anyDuplicated(sexes)) {
+    stop(sprintf("--sex contains duplicates: %s",
+                 paste(sexes, collapse = ",")), call. = FALSE)
+  }
+  sexes
 }
 
 opts <- parse_args(args)
@@ -83,10 +108,12 @@ source("R/12_factor_ldsc.R")
 source("R/13_qc_filters.R")
 source("R/14_split_vcf.R")
 
-config <- read_config(opts$config, root = project_root)
-config <- setup_pipeline(config, sex = opts$sex, threads = opts$threads)
+sexes <- parse_sexes(opts$sex)
+both_strat <- all(c("male", "female") %in% sexes)
 
-sexes <- if (opts$sex == "both") c("male", "female") else opts$sex
+config <- read_config(opts$config, root = project_root)
+config <- setup_pipeline(config, sex = sexes, threads = opts$threads)
+
 all_stages <- c("munge", "ldsc", "efa", "cfa", "sumstats", "gwas", "vcf",
                 "factor_ldsc", "qc_filters", "split_vcf",
                 "factor_summary", "comparison", "plots", "report")
@@ -200,15 +227,17 @@ tryCatch({
     }
   }
 
-  if (should_run("comparison") && opts$sex == "both") {
+  if (should_run("comparison") && both_strat) {
     if (!should_skip("comparison", "both")) run_comparison(config)
+  } else if (should_run("comparison")) {
+    log_info("setup", "Skipping comparison stage: requires both male and female in --sex")
   }
 
   if (should_run("plots")) {
     for (sex in sexes) {
       if (!should_skip("plots", sex)) run_plots(config, sex)
     }
-    if (opts$sex == "both") {
+    if (both_strat) {
       run_miami(config)
       run_comparison_plot(config)
     }

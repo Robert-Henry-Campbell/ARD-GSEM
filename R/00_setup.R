@@ -6,16 +6,22 @@ suppressPackageStartupMessages({
 
 source("R/utils.R")
 
-setup_pipeline <- function(config, sex = "both", threads = NULL) {
+setup_pipeline <- function(config, sex, threads = NULL) {
   if (!is.null(threads)) config$parallel$n_workers <- threads
+
+  sexes <- as.character(sex)
+  valid <- c("male", "female", "bothsex")
+  bad <- setdiff(sexes, valid)
+  if (length(bad) > 0L) stop(sprintf("setup_pipeline: invalid sex value(s): %s",
+                                      paste(bad, collapse = ",")))
 
   init_logging(config)
   log_info("setup", sprintf("Config: %s", config$project$name))
   log_info("setup", sprintf("Threads: %d | Sex: %s",
-                            config$parallel$n_workers, sex))
+                            config$parallel$n_workers,
+                            paste(sexes, collapse = ",")))
   report_tempdir()
 
-  sexes <- if (sex == "both") c("male", "female") else sex
   validate_reference(config, sexes)
 
   for (s in sexes) {
@@ -23,9 +29,11 @@ setup_pipeline <- function(config, sex = "both", threads = NULL) {
     log_info("setup", sprintf("Traits detected (%s): %s", s, paste(traits, collapse = ", ")))
   }
 
-  if (sex == "both") {
+  both_strat <- all(c("male", "female") %in% sexes)
+  if (both_strat) {
     shared <- get_shared_traits(config)
-    log_info("setup", sprintf("Shared traits: %s", paste(shared, collapse = ", ")))
+    log_info("setup", sprintf("Shared traits (male ∩ female): %s",
+                              paste(shared, collapse = ", ")))
   }
 
   for (s in sexes) {
@@ -40,7 +48,7 @@ setup_pipeline <- function(config, sex = "both", threads = NULL) {
   config
 }
 
-report_tempdir <- function(warn_threshold_gb = 50) {
+report_tempdir <- function(warn_threshold_gb = 200) {
   td <- tempdir()
   td_env <- Sys.getenv("TMPDIR", unset = NA)
   avail_gb <- tryCatch({
@@ -82,7 +90,8 @@ validate_reference <- function(config, sexes = c("male", "female")) {
   if (!file.exists(hm3)) {
     log_fatal("setup", sprintf("HM3 SNP list not found: %s", hm3))
   }
-  if (!file.exists(vm)) {
+  needs_neale <- any(c("male", "female") %in% sexes)
+  if (needs_neale && !file.exists(vm)) {
     log_fatal("setup", sprintf("Variants manifest not found: %s", vm))
   }
   icd_path <- file.path(meta, "icd10_categories.csv")
@@ -91,9 +100,21 @@ validate_reference <- function(config, sexes = c("male", "female")) {
   }
 
   for (s in sexes) {
-    rda <- file.path(manifest_dir, sprintf("neale_%s_manifest.rda", s))
-    if (!file.exists(rda)) {
-      log_fatal("setup", sprintf("Neale %s manifest not found: %s", s, rda))
+    if (identical(s, "bothsex")) {
+      rda <- file.path(manifest_dir, "panukb_bothsex_manifest.rda")
+      if (!file.exists(rda)) {
+        log_fatal("setup", sprintf("Pan-UKB bothsex manifest not found: %s", rda))
+      }
+      pvm <- config$paths$panukb_variants_manifest
+      if (is.null(pvm) || !nzchar(pvm) || !file.exists(pvm)) {
+        log_fatal("setup", sprintf("Pan-UKB variants manifest not found: %s",
+                                    as.character(pvm)))
+      }
+    } else {
+      rda <- file.path(manifest_dir, sprintf("neale_%s_manifest.rda", s))
+      if (!file.exists(rda)) {
+        log_fatal("setup", sprintf("Neale %s manifest not found: %s", s, rda))
+      }
     }
     sd <- file.path(sumstats_dir, s)
     if (!dir.exists(sd) || length(list.files(sd)) == 0L) {

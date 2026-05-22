@@ -9,6 +9,8 @@ renv/python/
 .Rhistory
 .RData
 manifest/variants.tsv.bgz
+manifest/full_variant_qc_metrics.txt.bgz
+manifest/panukb_phenotype_manifest.csv
 manifest/*.rda
 meta/*.rda
 .claude/worktrees/
