@@ -25,13 +25,14 @@ run_gwas_smoke <- function(config, sex) {
 
   h2 <- fread(file.path(config$paths$output_dir, sex, "ldsc", "h2_qc.csv"))
   retained <- h2[pass == TRUE]$trait
-  categories <- fread(file.path(config$paths$meta_dir, "icd10_categories.csv"))
+  categories <- load_trait_categories(config, sex)
   loadings_path <- file.path(config$paths$output_dir, sex, "cfa", "factor_loadings.csv")
   ordering_table <- if (file.exists(loadings_path)) fread(loadings_path) else NULL
   apriori_model <- build_apriori_model(
     retained, categories,
     min_indicators = config$cfa$min_indicators_per_factor,
-    ordering_table = ordering_table)
+    ordering_table = ordering_table,
+    code_format = if (identical(sex, "bothsex_meta")) "free" else "icd3")
   spec <- build_gwas_model(apriori_model)
 
   fix_measurement <- isTRUE(config$gwas$fix_measurement %||% TRUE)

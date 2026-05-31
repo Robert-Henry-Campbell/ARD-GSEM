@@ -10,7 +10,7 @@ setup_pipeline <- function(config, sex, threads = NULL) {
   if (!is.null(threads)) config$parallel$n_workers <- threads
 
   sexes <- as.character(sex)
-  valid <- c("male", "female", "bothsex")
+  valid <- c("male", "female", "bothsex", "bothsex_meta")
   bad <- setdiff(sexes, valid)
   if (length(bad) > 0L) stop(sprintf("setup_pipeline: invalid sex value(s): %s",
                                       paste(bad, collapse = ",")))
@@ -94,8 +94,10 @@ validate_reference <- function(config, sexes = c("male", "female")) {
   if (needs_neale && !file.exists(vm)) {
     log_fatal("setup", sprintf("Variants manifest not found: %s", vm))
   }
+  # bothsex_meta sources chapter info from the FinnGen manifest, not icd10_categories.csv
+  needs_icd_csv <- any(sexes %in% c("male", "female", "bothsex"))
   icd_path <- file.path(meta, "icd10_categories.csv")
-  if (!file.exists(icd_path)) {
+  if (needs_icd_csv && !file.exists(icd_path)) {
     log_fatal("setup", sprintf("ICD-10 categories file not found: %s", icd_path))
   }
 
@@ -109,6 +111,58 @@ validate_reference <- function(config, sexes = c("male", "female")) {
       if (is.null(pvm) || !nzchar(pvm) || !file.exists(pvm)) {
         log_fatal("setup", sprintf("Pan-UKB variants manifest not found: %s",
                                     as.character(pvm)))
+      }
+    } else if (identical(s, "bothsex_meta")) {
+      rda <- file.path(manifest_dir, "bothsex_meta_manifest.rda")
+      if (!file.exists(rda)) {
+        log_fatal("setup", sprintf("bothsex_meta manifest not found: %s. Run scripts/generate_bothsex_meta_manifest.R.", rda))
+      }
+      meta_tsv <- config$bothsex_meta$manifest
+      if (!is.null(meta_tsv) && !is_absolute_path(meta_tsv)) {
+        meta_tsv <- file.path(config$project$root %||% getwd(), meta_tsv)
+      }
+      if (is.null(meta_tsv) || !nzchar(meta_tsv) || !file.exists(meta_tsv)) {
+        log_fatal("setup", sprintf("bothsex_meta phenotype manifest TSV not found: %s",
+                                    as.character(meta_tsv)))
+      }
+      chain <- config$bothsex_meta$chain_file
+      if (!is.null(chain) && !is_absolute_path(chain)) {
+        chain <- file.path(config$project$root %||% getwd(), chain)
+      }
+      if (is.null(chain) || !nzchar(chain) || !file.exists(chain)) {
+        log_fatal("setup", sprintf("bothsex_meta liftover chain file not found: %s. Run bash scripts/download_chain.sh.",
+                                    as.character(chain)))
+      }
+      if (!requireNamespace("rtracklayer", quietly = TRUE)) {
+        log_fatal("setup", "rtracklayer is required for bothsex_meta liftover but is not installed. Install with: Rscript -e 'BiocManager::install(\"rtracklayer\")'")
+      }
+      # R12: load the .rda once and verify every configured af_cohort's
+      # manifest_n_cases / manifest_n_controls column exists. A typo in the
+      # YAML would otherwise silently zero that cohort's weight at runtime.
+      env_rda <- new.env()
+      load(rda, envir = env_rda)
+      objs <- ls(env_rda)
+      if (length(objs) != 1L) {
+        log_fatal("setup", sprintf("bothsex_meta manifest .rda must contain exactly 1 object, found %d (%s)",
+                                    length(objs), paste(objs, collapse = ", ")))
+      }
+      mf <- get(objs[1L], envir = env_rda)
+      mf_cols <- names(mf)
+      af_cohorts_cfg <- config$bothsex_meta$af_cohorts
+      if (length(af_cohorts_cfg) == 0L) {
+        log_fatal("setup", "config$bothsex_meta$af_cohorts is empty; need at least one cohort")
+      }
+      for (co in af_cohorts_cfg) {
+        for (key in c("manifest_n_cases", "manifest_n_controls")) {
+          col_name <- co[[key]]
+          if (is.null(col_name) || !nzchar(col_name) || !(col_name %in% mf_cols)) {
+            log_fatal("setup", sprintf(
+              "bothsex_meta af_cohort '%s': %s='%s' not found in %s (available: %s). Check config$bothsex_meta$af_cohorts and re-run scripts/generate_bothsex_meta_manifest.R if needed.",
+              co$name %||% "<unnamed>", key,
+              as.character(col_name), basename(rda),
+              paste(mf_cols, collapse = ", ")))
+          }
+        }
       }
     } else {
       rda <- file.path(manifest_dir, sprintf("neale_%s_manifest.rda", s))

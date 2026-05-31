@@ -28,8 +28,9 @@ parse_args <- function(args) {
     else if (args[i] == "--help" || args[i] == "-h") {
       cat("Usage: Rscript scripts/run_pipeline.R --sex <list> [options]\n\n")
       cat("Options:\n")
-      cat("  --sex       REQUIRED. Comma-separated subset of {male, female, bothsex}.\n")
-      cat("              e.g. --sex male,female  or  --sex bothsex  or  --sex male,female,bothsex\n")
+      cat("  --sex       REQUIRED. Comma-separated subset of {male, female, bothsex, bothsex_meta}.\n")
+      cat("              e.g. --sex male,female  or  --sex bothsex  or  --sex bothsex_meta\n")
+      cat("              (bothsex_meta = FinnGen+UKBB EUR-only meta-analysis; liftover GRCh38->GRCh37)\n")
       cat("  --stage     all|<name>[,<name>...]  e.g. 'gwas,vcf,plots' (default: all)\n")
       cat("              names: munge|ldsc|efa|cfa|sumstats|gwas|vcf|factor_ldsc|qc_filters|split_vcf|factor_summary|plots|comparison|report\n")
       cat("  --threads   N                 (default: 24)\n")
@@ -41,14 +42,14 @@ parse_args <- function(args) {
     else { cat("Unknown argument:", args[i], "\n"); quit(status = 1) }
   }
   if (is.null(opts$sex) || is.na(opts$sex) || !nzchar(opts$sex)) {
-    stop("--sex is required: comma-separated subset of {male, female, bothsex}.",
+    stop("--sex is required: comma-separated subset of {male, female, bothsex, bothsex_meta}.",
          call. = FALSE)
   }
   opts
 }
 
 parse_sexes <- function(sex_arg) {
-  valid <- c("male", "female", "bothsex")
+  valid <- c("male", "female", "bothsex", "bothsex_meta")
   sexes <- trimws(strsplit(sex_arg, ",", fixed = TRUE)[[1L]])
   sexes <- sexes[nzchar(sexes)]
   if (length(sexes) == 0L) {
@@ -128,15 +129,33 @@ should_run <- function(stage_name) {
 should_skip <- function(stage_name, sex_val) {
   if (!opts$resume) return(FALSE)
   manifest <- read_stage_manifest(stage_name, sex_val, config)
-  # Current hash: stage block + paths (so a path edit correctly invalidates).
+  # Source-specific config block (panukb / bothsex_meta). discover$* is
+  # intentionally excluded: filename pattern changes shouldn't invalidate
+  # already-processed traits (existing convention).
+  source_key <- switch(sex_val,
+                       bothsex      = "panukb",
+                       bothsex_meta = "bothsex_meta",
+                       NULL)
+  source_cfg <- if (is.null(source_key)) NULL else config[[source_key]]
+  # Current hash: stage block + paths + source-specific block. A change to
+  # config$bothsex_meta$het_p_min (etc.) will correctly invalidate the manifest.
   current_hash <- digest::digest(
+    list(stage = config[[stage_name]] %||% list(),
+         paths = config$paths,
+         source = source_cfg),
+    algo = "sha256")
+  # Compat hash: pre-source-keyed scheme (stage + paths). Manifests written
+  # under the older scheme still validate so existing male/female/bothsex runs
+  # don't get re-executed the first time after this code lands.
+  compat_hash <- digest::digest(
     list(stage = config[[stage_name]] %||% list(), paths = config$paths),
     algo = "sha256")
   # Legacy hash: stage block only (pre-paths-in-hash convention). Manifests
-  # written under the old scheme still validate so users don't lose hours
+  # written under the oldest scheme still validate so users don't lose hours
   # of upstream work the first time they pull the new code.
   legacy_hash <- digest::digest(config[[stage_name]] %||% list(), algo = "sha256")
   fresh <- stage_is_fresh(manifest, current_hash) ||
+           stage_is_fresh(manifest, compat_hash) ||
            stage_is_fresh(manifest, legacy_hash)
   if (fresh) {
     log_info("setup", sprintf("--resume: %s/%s manifest fresh; skipping", stage_name, sex_val))

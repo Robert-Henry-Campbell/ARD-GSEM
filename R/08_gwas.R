@@ -40,7 +40,7 @@ run_gwas <- function(config, sex) {
   h2_path <- file.path(config$paths$output_dir, sex, "ldsc", "h2_qc.csv")
   retained <- fread(h2_path)[pass == TRUE]$trait
 
-  categories <- fread(file.path(config$paths$meta_dir, "icd10_categories.csv"))
+  categories <- load_trait_categories(config, sex)
   loadings_path <- file.path(config$paths$output_dir, sex, "cfa", "factor_loadings.csv")
   ordering_table <- if (file.exists(loadings_path)) {
     log_info("gwas", sprintf("Indicator ordering: descending |std_loading| from %s", loadings_path))
@@ -55,7 +55,8 @@ run_gwas <- function(config, sex) {
     min_indicators = config$cfa$min_indicators_per_factor,
     ordering_table = ordering_table,
     add_factor_covariances = TRUE,
-    add_heywood_constraints = TRUE)
+    add_heywood_constraints = TRUE,
+    code_format = if (identical(sex, "bothsex_meta")) "free" else "icd3")
   if (nchar(apriori_model) == 0L) {
     log_fatal("gwas", "A priori model is empty; cannot run factor GWAS")
   }

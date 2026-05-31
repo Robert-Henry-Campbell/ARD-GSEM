@@ -170,7 +170,7 @@ run_ldsc <- function(config, sex) {
     ldsc_output$S[keep_idx, keep_idx] <- S_filtered
   }
 
-  categories <- fread(file.path(config$paths$meta_dir, "icd10_categories.csv"))
+  categories <- load_trait_categories(config, sex)
   survival <- check_chapter_survival(
     retained, categories,
     min_indicators = config$cfa$min_indicators_per_factor %||% 3L,

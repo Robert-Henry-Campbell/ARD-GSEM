@@ -64,9 +64,11 @@ run_cfa <- function(config, sex, ldsc_results = NULL, efa_results = NULL) {
   # A priori model
   if (config$cfa$model_source %in% c("both", "apriori")) {
     log_info("cfa", "Building a priori model from ICD-10 chapters...")
-    categories <- fread(file.path(config$paths$meta_dir, "icd10_categories.csv"))
+    categories <- load_trait_categories(config, sex)
+    code_format <- if (identical(sex, "bothsex_meta")) "free" else "icd3"
     apriori_model <- build_apriori_model(retained, categories,
-                                         min_indicators = config$cfa$min_indicators_per_factor)
+                                         min_indicators = config$cfa$min_indicators_per_factor,
+                                         code_format = code_format)
 
     if (nchar(apriori_model) > 0) {
       log_info("cfa", sprintf("A priori model:\n%s", apriori_model))

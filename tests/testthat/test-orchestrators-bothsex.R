@@ -2,7 +2,7 @@
 # Mirror the parse_sexes helper here verbatim; the orchestrator script is the
 # single source of truth and a divergence is caught by smoke runs.
 parse_sexes_local <- function(sex_arg) {
-  valid <- c("male", "female", "bothsex")
+  valid <- c("male", "female", "bothsex", "bothsex_meta")
   sexes <- trimws(strsplit(sex_arg, ",", fixed = TRUE)[[1L]])
   sexes <- sexes[nzchar(sexes)]
   if (length(sexes) == 0L) stop("--sex parsed to an empty list", call. = FALSE)
@@ -18,12 +18,14 @@ parse_sexes_local <- function(sex_arg) {
   sexes
 }
 
-test_that("parse_sexes accepts comma-separated subset of {male,female,bothsex}", {
+test_that("parse_sexes accepts comma-separated subset of {male,female,bothsex,bothsex_meta}", {
   expect_equal(parse_sexes_local("male"), "male")
   expect_equal(parse_sexes_local("female"), "female")
   expect_equal(parse_sexes_local("bothsex"), "bothsex")
+  expect_equal(parse_sexes_local("bothsex_meta"), "bothsex_meta")
   expect_equal(parse_sexes_local("male,female"), c("male", "female"))
   expect_equal(parse_sexes_local("male,female,bothsex"), c("male", "female", "bothsex"))
+  expect_equal(parse_sexes_local("bothsex,bothsex_meta"), c("bothsex", "bothsex_meta"))
 })
 
 test_that("parse_sexes trims whitespace inside list", {

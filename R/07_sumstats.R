@@ -39,18 +39,33 @@ run_sumstats <- function(config, sex) {
   cc_list <- lapply(retained, function(trait) get_case_control(config, sex, trait))
   sample_prev <- vapply(cc_list, function(cc) cc$n_cases / (cc$n_cases + cc$n_controls),
                         numeric(1))
-  neffs <- vapply(cc_list, function(cc) compute_neff(cc$n_cases, cc$n_controls),
-                  numeric(1))
+  # R13: trait-scalar N comes from each pre_munge.tsv's N column (constant per
+  # file by construction in run_munge_*). Makes munge the single source of
+  # truth for N. Behaviour is unchanged for male / female / bothsex (their N
+  # = compute_neff(pooled)) but correctly uses median per-SNP Neff for
+  # bothsex_meta. Previously we recomputed compute_neff(pooled) here, which
+  # overstated effective N for meta sources where some SNPs lack a cohort.
+  neffs <- vapply(files, function(f) {
+    head <- data.table::fread(f, nrows = 1L)
+    if (!"N" %in% names(head)) {
+      log_fatal("sumstats", sprintf("pre_munge.tsv missing N column: %s", f))
+    }
+    as.numeric(head$N[1L])
+  }, numeric(1))
 
   log_info("sumstats", sprintf("Calling GenomicSEM::sumstats() for %d traits (%s)",
                                 length(retained), paste(retained, collapse = ", ")))
 
-  is_bothsex <- identical(sex, "bothsex")
+  is_bothsex <- sex %in% c("bothsex", "bothsex_meta")
   if (is_bothsex) {
     se_logit <- rep(TRUE,  length(retained))
     ols      <- rep(FALSE, length(retained))
     linprob  <- rep(FALSE, length(retained))
-    source_label <- "Pan-UKB SAIGE on EUR; betas already log(OR)"
+    source_label <- if (identical(sex, "bothsex_meta")) {
+      "FinnGen + UKBB EUR-only inverse-variance meta-analysis (where available) + FinnGen-only single-cohort GWAS (otherwise); betas already log(OR)"
+    } else {
+      "Pan-UKB SAIGE on EUR; betas already log(OR)"
+    }
   } else {
     se_logit <- rep(FALSE, length(retained))
     ols      <- rep(FALSE, length(retained))

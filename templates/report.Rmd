@@ -50,6 +50,14 @@ if (!is.null(data$bothsex$h2)) {
 }
 ```
 
+### Both-sex meta (FinnGen + UKBB EUR)
+
+```{r h2-bothsex-meta}
+if (!is.null(data$bothsex_meta$h2)) {
+  knitr::kable(data$bothsex_meta$h2, digits = 4, caption = "bothsex_meta h2 estimates (FinnGen + UKBB EUR inverse-variance meta-analysis; log-odds scale)")
+}
+```
+
 ## Exploratory Factor Analysis
 
 ### Male
@@ -76,11 +84,19 @@ if (!is.null(data$bothsex$efa_loadings)) {
 }
 ```
 
+### Both-sex meta (FinnGen + UKBB EUR)
+
+```{r efa-bothsex-meta}
+if (!is.null(data$bothsex_meta$efa_loadings)) {
+  knitr::kable(data$bothsex_meta$efa_loadings, digits = 3, caption = "bothsex_meta EFA loadings (FinnGen + UKBB EUR)")
+}
+```
+
 ## Genetic-Correlation Heatmaps
 
 ```{r rg-heatmaps, fig.show='hold', out.width="49%"}
 out_dir <- config$paths$output_dir
-for (sex in c("male", "female", "bothsex")) {
+for (sex in c("male", "female", "bothsex", "bothsex_meta")) {
   p <- file.path(out_dir, sex, "plots", sprintf("%s_rg_heatmap.png", sex))
   if (file.exists(p)) knitr::include_graphics(p)
 }
@@ -92,7 +108,7 @@ for (sex in c("male", "female", "bothsex")) {
 
 ```{r cfa-fit}
 fit_all <- data.table()
-for (sex in c("male", "female", "bothsex")) {
+for (sex in c("male", "female", "bothsex", "bothsex_meta")) {
   if (!is.null(data[[sex]]$cfa_fit)) {
     tmp <- copy(data[[sex]]$cfa_fit)
     tmp[, sex := sex]
@@ -107,7 +123,7 @@ if (nrow(fit_all) > 0) {
 ### Path Diagrams
 
 ```{r path-diagrams, fig.show='hold', out.width="49%"}
-for (sex in c("male", "female", "bothsex")) {
+for (sex in c("male", "female", "bothsex", "bothsex_meta")) {
   p <- file.path(out_dir, sex, "plots", sprintf("%s_path_diagram.png", sex))
   if (file.exists(p)) knitr::include_graphics(p)
 }
@@ -116,7 +132,7 @@ for (sex in c("male", "female", "bothsex")) {
 ### Loadings
 
 ```{r loadings-bar, fig.show='hold', out.width="49%"}
-for (sex in c("male", "female", "bothsex")) {
+for (sex in c("male", "female", "bothsex", "bothsex_meta")) {
   p <- file.path(out_dir, sex, "plots", sprintf("%s_loadings_bar.png", sex))
   if (file.exists(p)) knitr::include_graphics(p)
 }
@@ -143,7 +159,7 @@ if (file.exists(p)) knitr::include_graphics(p)
 
 ```{r factor-summary}
 fs <- data.table()
-for (sex in c("male", "female", "bothsex")) {
+for (sex in c("male", "female", "bothsex", "bothsex_meta")) {
   p <- file.path(out_dir, sex, "gwas", sprintf("%s_factor_summary.csv", sex))
   if (file.exists(p)) fs <- rbind(fs, fread(p), fill = TRUE)
 }
@@ -154,7 +170,7 @@ if (nrow(fs) > 0) knitr::kable(fs, digits = 3,
 ### Manhattan + QQ plots
 
 ```{r manhattan-qq, fig.show='hold', out.width="49%"}
-for (sex in c("male", "female", "bothsex")) {
+for (sex in c("male", "female", "bothsex", "bothsex_meta")) {
   plot_dir <- file.path(out_dir, sex, "plots")
   if (!dir.exists(plot_dir)) next
   pngs <- list.files(plot_dir, pattern = "_(manhattan|qq)\\.png$", full.names = TRUE)
@@ -175,7 +191,7 @@ if (dir.exists(miami_dir)) {
 ### Top SNPs per factor
 
 ```{r top-snps}
-for (sex in c("male", "female", "bothsex")) {
+for (sex in c("male", "female", "bothsex", "bothsex_meta")) {
   p <- file.path(out_dir, sex, "gwas", sprintf("%s_top_snps.csv", sex))
   if (file.exists(p)) {
     tdt <- fread(p)
@@ -191,12 +207,14 @@ for (sex in c("male", "female", "bothsex")) {
 
 ```{r factor-gwas-vcfs}
 vcf_paths <- c(
-  file.path(out_dir, "male",    "gwas", "male_chapter_gsem.vcf.gz"),
-  file.path(out_dir, "male",    "gwas", "male_chapter_gsem.vcf.gz.tbi"),
-  file.path(out_dir, "female",  "gwas", "female_chapter_gsem.vcf.gz"),
-  file.path(out_dir, "female",  "gwas", "female_chapter_gsem.vcf.gz.tbi"),
-  file.path(out_dir, "bothsex", "gwas", "bothsex_chapter_gsem.vcf.gz"),
-  file.path(out_dir, "bothsex", "gwas", "bothsex_chapter_gsem.vcf.gz.tbi")
+  file.path(out_dir, "male",          "gwas", "male_chapter_gsem.vcf.gz"),
+  file.path(out_dir, "male",          "gwas", "male_chapter_gsem.vcf.gz.tbi"),
+  file.path(out_dir, "female",        "gwas", "female_chapter_gsem.vcf.gz"),
+  file.path(out_dir, "female",        "gwas", "female_chapter_gsem.vcf.gz.tbi"),
+  file.path(out_dir, "bothsex",       "gwas", "bothsex_chapter_gsem.vcf.gz"),
+  file.path(out_dir, "bothsex",       "gwas", "bothsex_chapter_gsem.vcf.gz.tbi"),
+  file.path(out_dir, "bothsex_meta",  "gwas", "bothsex_meta_chapter_gsem.vcf.gz"),
+  file.path(out_dir, "bothsex_meta",  "gwas", "bothsex_meta_chapter_gsem.vcf.gz.tbi")
 )
 vcf_status <- data.frame(
   file = basename(vcf_paths),

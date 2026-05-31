@@ -307,12 +307,13 @@ run_plots <- function(config, sex) {
   }
 
   if (!is.null(ldgs_ap)) {
-    categories <- fread(file.path(config$paths$meta_dir, "icd10_categories.csv"))
+    categories <- load_trait_categories(config, sex)
     retained_traits <- unique(ldgs_ap$trait)
     if (length(retained_traits) > 0L) {
       apriori_model <- build_apriori_model(
         retained_traits, categories,
-        min_indicators = config$cfa$min_indicators_per_factor)
+        min_indicators = config$cfa$min_indicators_per_factor,
+        code_format = if (identical(sex, "bothsex_meta")) "free" else "icd3")
       if (nchar(apriori_model) > 0L) {
         pd <- write_path_diagram(apriori_model, ldgs_ap, sex, out_dir)
         written <- c(written, pd$dot, na.omit(pd$png))

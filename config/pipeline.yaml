@@ -39,6 +39,50 @@ panukb:
     info: info
     af: af_EUR
 
+bothsex_meta:
+  manifest: manifest/FinnGen_R12_MVP_UKBB_manifest.tsv
+  manifest_rda: manifest/bothsex_meta_manifest.rda
+  chain_file: reference/chains/hg38ToHg19.over.chain
+  genome_build: GRCh38           # source build, before liftover
+  het_p_min: 1.0e-3              # drop SNPs with all_inv_var_het_p below this
+  columns:
+    chr: "#CHR"
+    pos: POS
+    ref: REF
+    alt: ALT
+    snp: SNP
+    rsid: rsid
+    beta: all_inv_var_meta_beta
+    se: all_inv_var_meta_sebeta
+    pval: all_inv_var_meta_p
+    mlogp: all_inv_var_meta_mlogp
+    het_p: all_inv_var_het_p
+    all_meta_N: all_meta_N
+  af_cohorts:                    # 2-way EUR-only meta: FinnGen + UKBB
+    # NOTE column case: sumstats use FINNGEN_*/UKBB_* (uppercase); manifest TSV
+    # uses fg_*/ukbb_* (lowercase). Don't conflate.
+    - name: fg
+      af_col: FINNGEN_af_alt
+      beta_col: FINNGEN_beta     # presence indicator (non-NA -> cohort contributed)
+      manifest_n_cases: fg_n_cases
+      manifest_n_controls: fg_n_controls
+    - name: ukbb
+      af_col: UKBB_af_alt
+      beta_col: UKBB_beta
+      manifest_n_cases: ukbb_n_cases
+      manifest_n_controls: ukbb_n_controls
+  fg_only_columns:               # raw FinnGen single-cohort GWAS schema
+    chr: "#chrom"
+    pos: pos
+    ref: ref
+    alt: alt
+    rsids: rsids                 # plural -- comma-separated multi-rsids possible
+    beta: beta
+    se: sebeta
+    pval: pval
+    mlogp: mlogp
+    af_alt: af_alt
+
 munge:
   use_neff: true
   maf_threshold: 0.01
@@ -62,9 +106,10 @@ discover:
   # stage's resume-hash.
   sumstats_filename_pattern: "\\.gwas\\.imputed_v3\\."
   bothsex_filename_pattern: "^icd10-.*-both_sexes\\.tsv\\.bgz$"
+  bothsex_meta_filename_pattern: "^[A-Z][A-Z0-9_]+_(meta_out|fg)\\.tsv\\.gz$"
 
 ldsc:
-  h2_z_threshold: 4.0
+  h2_z_threshold: 3.0
   liability_scale: true
   pop_prev_source: ukb_cohort
   min_factors_required: 2

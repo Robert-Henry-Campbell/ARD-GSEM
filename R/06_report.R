@@ -3,7 +3,7 @@ run_report <- function(config) {
 
   report_data <- list()
 
-  for (sex in c("male", "female", "bothsex")) {
+  for (sex in c("male", "female", "bothsex", "bothsex_meta")) {
     h2_path <- file.path(config$paths$output_dir, sex, "ldsc", "h2_qc.csv")
     if (file.exists(h2_path)) report_data[[sex]]$h2 <- fread(h2_path)
 
@@ -47,7 +47,7 @@ run_report <- function(config) {
 
 print_summary <- function(report_data) {
   cat("\n=== GSEM Pipeline Summary ===\n\n")
-  for (sex in c("male", "female", "bothsex")) {
+  for (sex in c("male", "female", "bothsex", "bothsex_meta")) {
     if (!is.null(report_data[[sex]]$h2)) {
       cat(sprintf("--- %s h2 estimates ---\n", toupper(sex)))
       print(report_data[[sex]]$h2)

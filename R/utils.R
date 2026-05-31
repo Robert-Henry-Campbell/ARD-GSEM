@@ -200,6 +200,281 @@ parse_variant_column <- function(dt) {
   dt
 }
 
+# --- GRCh38 -> GRCh37 liftover (bothsex_meta) ---
+
+# rtracklayer::liftOver returns a GRangesList: each input range maps to 0, 1,
+# or N output ranges. A naive as.data.table() expansion silently misaligns rows
+# with their associated effect estimates -- which is data corruption, not a
+# fixable warning. The helper below tags each input row with .row_id, lifts,
+# and keeps only rows whose .row_id maps exactly once. Multi-mapped and
+# zero-mapped rows are dropped (counted separately for the log).
+liftover_grch38_to_grch37 <- function(dt, chain_path) {
+  if (!requireNamespace("rtracklayer", quietly = TRUE)) {
+    log_fatal("munge", sprintf(
+      "rtracklayer is required for liftOver but is not installed. Install with: Rscript -e 'BiocManager::install(\"rtracklayer\")'"))
+  }
+  if (!requireNamespace("GenomicRanges", quietly = TRUE)) {
+    log_fatal("munge", "GenomicRanges (rtracklayer dependency) is missing")
+  }
+  if (is.null(chain_path) || !nzchar(chain_path) || !file.exists(chain_path)) {
+    log_fatal("munge", sprintf("liftover chain file not found: %s", as.character(chain_path)))
+  }
+  n_in <- nrow(dt)
+  if (n_in == 0L) return(dt)
+
+  dt[, .row_id := .I]
+  chr_in <- as.character(dt$chr)
+  pos_in <- as.integer(dt$pos)
+  gr <- GenomicRanges::GRanges(
+    seqnames = paste0("chr", chr_in),
+    ranges   = IRanges::IRanges(start = pos_in, end = pos_in),
+    .row_id  = dt$.row_id
+  )
+  chain_obj <- rtracklayer::import.chain(chain_path)
+  lifted_grl <- rtracklayer::liftOver(gr, chain_obj)
+  lifted <- unlist(lifted_grl)
+
+  row_ids <- S4Vectors::mcols(lifted)$.row_id
+  tab <- table(row_ids)
+  unique_ids <- as.integer(names(tab)[tab == 1L])
+  multi_ids  <- as.integer(names(tab)[tab >  1L])
+  n_multi <- length(multi_ids)
+  n_unmap <- n_in - length(unique_ids) - n_multi
+
+  keep_mask <- row_ids %in% unique_ids
+  lifted_keep <- lifted[keep_mask]
+  lookup <- data.table::data.table(
+    .row_id = S4Vectors::mcols(lifted_keep)$.row_id,
+    chr_new = sub("^chr", "", as.character(GenomicRanges::seqnames(lifted_keep))),
+    pos_new = as.integer(GenomicRanges::start(lifted_keep))
+  )
+  data.table::setkey(lookup, .row_id)
+
+  out <- merge(dt, lookup, by = ".row_id", all = FALSE, sort = FALSE)
+  out[, chr := chr_new]
+  out[, pos := pos_new]
+  out[, c(".row_id", "chr_new", "pos_new") := NULL]
+  dt[, .row_id := NULL]
+
+  n_out <- nrow(out)
+  pct <- if (n_in == 0L) 0 else 100 * n_out / n_in
+  log_info("munge", sprintf(
+    "liftover_grch38_to_grch37: %s -> %s variants (%.1f%% retained, %s multi-mapped, %s unmapped)",
+    format(n_in, big.mark = ","), format(n_out, big.mark = ","), pct,
+    format(n_multi, big.mark = ","), format(max(0L, n_unmap), big.mark = ",")))
+  out
+}
+
+# --- Meta-analysis helpers (bothsex_meta) ---
+
+# N-weighted mean of per-cohort effect-allele frequencies.
+# af_mat: numeric matrix, rows = SNPs, cols = cohorts (in the order of
+# config$bothsex_meta$af_cohorts).
+# n_weights: numeric vector, length = ncol(af_mat); per-cohort trait-level
+# (n_cases + n_controls) sum from the manifest.
+# Returns: numeric vector length nrow(af_mat). For each row, NA AFs zero out
+# their cohort's weight. Returns NA only if every cohort is NA on that row.
+nweighted_meta_af <- function(af_mat, n_weights) {
+  if (!is.matrix(af_mat)) af_mat <- as.matrix(af_mat)
+  if (length(n_weights) != ncol(af_mat)) {
+    stop(sprintf("nweighted_meta_af: n_weights length %d != ncol(af_mat) %d",
+                 length(n_weights), ncol(af_mat)))
+  }
+  na_mask <- is.na(af_mat)
+  af_filled <- af_mat
+  af_filled[na_mask] <- 0
+  w <- matrix(n_weights, nrow = nrow(af_mat), ncol = ncol(af_mat), byrow = TRUE)
+  w[na_mask] <- 0
+  num <- rowSums(af_filled * w)
+  den <- rowSums(w)
+  out <- ifelse(den > 0, num / den, NA_real_)
+  n_all_na <- sum(den == 0)
+  if (n_all_na > 0L) {
+    log_info("munge", sprintf(
+      "nweighted_meta_af: %s row(s) had no cohort AF (will be dropped by MAF filter)",
+      format(n_all_na, big.mark = ",")))
+  }
+  out
+}
+
+# Per-SNP effective N for a multi-cohort meta-analysis.
+# Each SNP's Neff = sum over cohorts of (cohort_Neff * I[cohort contributed]).
+# Cohort contribution per row is inferred from non-NA beta_col.
+# Returns: numeric vector length nrow(dt). Caller takes median() as the
+# scalar trait-level N passed to GenomicSEM::munge().
+per_snp_neff <- function(dt, af_cohorts, manifest_row) {
+  if (length(af_cohorts) == 0L) {
+    stop("per_snp_neff: af_cohorts is empty; check config$bothsex_meta$af_cohorts")
+  }
+  neff_per_snp <- numeric(nrow(dt))
+  for (co in af_cohorts) {
+    nca <- manifest_row[[co$manifest_n_cases]]
+    nco <- manifest_row[[co$manifest_n_controls]]
+    if (length(nca) == 0L || length(nco) == 0L ||
+        is.na(nca) || is.na(nco) || nca <= 0 || nco <= 0) {
+      next
+    }
+    cohort_neff <- 4 * nca * nco / (nca + nco)
+    beta_col <- co$beta_col
+    if (!beta_col %in% names(dt)) {
+      log_warn("munge", sprintf(
+        "per_snp_neff: cohort %s beta_col '%s' missing; skipping cohort",
+        co$name, beta_col))
+      next
+    }
+    present <- !is.na(dt[[beta_col]])
+    neff_per_snp <- neff_per_snp + cohort_neff * as.numeric(present)
+  }
+  neff_per_snp
+}
+
+# --- Chapter assignment from FinnGen category (bothsex_meta) ---
+
+# Canonical ICD chapter strings (from meta/icd10_categories.csv `chapter`
+# column). Kept here as a constant so we don't re-read the CSV every time the
+# extractor is called.
+.canonical_icd_chapters <- c(
+  "Certain infectious and parasitic diseases",
+  "Neoplasms",
+  "Diseases of the blood and blood-forming organs and certain disorders involving the immune mechanism",
+  "Endocrine, nutritional and metabolic diseases",
+  "Mental, Behavioral and Neurodevelopmental disorders",
+  "Diseases of the nervous system",
+  "Diseases of the eye and adnexa",
+  "Diseases of the ear and mastoid process",
+  "Diseases of the circulatory system",
+  "Diseases of the respiratory system",
+  "Diseases of the digestive system",
+  "Diseases of the skin and subcutaneous tissue",
+  "Diseases of the musculoskeletal system and connective tissue",
+  "Diseases of the genitourinary system",
+  "Pregnancy, childbirth and the puerperium",
+  "Certain conditions originating in the perinatal period",
+  "Congenital malformations, deformations and chromosomal abnormalities",
+  "Symptoms, signs and abnormal clinical and laboratory findings, not elsewhere classified",
+  "Injury, poisoning and certain other consequences of external causes",
+  "External causes of morbidity",
+  "Factors influencing health status and contact with health services"
+)
+
+# FinnGen endpoint-prefix -> canonical chapter. Used as fallback when the
+# manifest `category` column is non-ICD (e.g. "Comorbidities of COPD",
+# "Interstitial lung disease endpoints"). Keys match `^[A-Z]+[0-9]+_` parsed
+# from the trait ID.
+.finngen_prefix_chapter <- list(
+  AB1  = "Certain infectious and parasitic diseases",
+  CD2  = "Neoplasms",
+  C3   = "Neoplasms",
+  D3   = "Diseases of the blood and blood-forming organs and certain disorders involving the immune mechanism",
+  E4   = "Endocrine, nutritional and metabolic diseases",
+  F5   = "Mental, Behavioral and Neurodevelopmental disorders",
+  G6   = "Diseases of the nervous system",
+  H7   = "Diseases of the eye and adnexa",
+  H8   = "Diseases of the ear and mastoid process",
+  I9   = "Diseases of the circulatory system",
+  J10  = "Diseases of the respiratory system",
+  K11  = "Diseases of the digestive system",
+  L12  = "Diseases of the skin and subcutaneous tissue",
+  M13  = "Diseases of the musculoskeletal system and connective tissue",
+  N14  = "Diseases of the genitourinary system",
+  Q17  = "Congenital malformations, deformations and chromosomal abnormalities",
+  R18  = "Symptoms, signs and abnormal clinical and laboratory findings, not elsewhere classified",
+  ST19 = "Injury, poisoning and certain other consequences of external causes",
+  Z21  = "Factors influencing health status and contact with health services"
+)
+
+# Strip Roman-numeral chapter prefix + trailing parenthetical, trim.
+# Vectorised.
+.clean_finngen_category <- function(s) {
+  s <- as.character(s)
+  s <- sub("^(I{1,3}|IV|VI{0,3}|IX|X{1,3}|XI{1,3}|XIV|XV|XVI{0,3}|XIX|XX|XXI)\\s+",
+           "", s, perl = TRUE)
+  s <- sub("\\s*\\([^)]*\\)\\s*$", "", s, perl = TRUE)
+  trimws(s)
+}
+
+# For each (category_text, trait_id) pair, return a list with:
+#   chapter:        canonical chapter string (or "Unclassified")
+#   chapter_source: "category-table" | "prefix-fallback" | "unclassified"
+# Vectorised. trait_ids must be same length as category_text.
+extract_chapter_with_fallback <- function(category_text, trait_ids) {
+  if (length(category_text) != length(trait_ids)) {
+    stop("extract_chapter_with_fallback: category_text and trait_ids must be same length")
+  }
+  cleaned <- .clean_finngen_category(category_text)
+  canon_lc <- tolower(.canonical_icd_chapters)
+  cleaned_lc <- tolower(cleaned)
+  chapter <- character(length(trait_ids))
+  source  <- character(length(trait_ids))
+  for (i in seq_along(trait_ids)) {
+    hit <- match(cleaned_lc[i], canon_lc)
+    if (!is.na(hit)) {
+      chapter[i] <- .canonical_icd_chapters[hit]
+      source[i]  <- "category-table"
+      next
+    }
+    pref <- regmatches(trait_ids[i],
+                       regexpr("^[A-Z]+[0-9]+", trait_ids[i], perl = TRUE))
+    if (length(pref) == 1L && nzchar(pref) && !is.null(.finngen_prefix_chapter[[pref]])) {
+      chapter[i] <- .finngen_prefix_chapter[[pref]]
+      source[i]  <- "prefix-fallback"
+      next
+    }
+    chapter[i] <- "Unclassified"
+    source[i]  <- "unclassified"
+  }
+  list(chapter = chapter, chapter_source = source)
+}
+
+# Source-aware trait-categories loader. Replaces all direct reads of
+# meta/icd10_categories.csv so the CFA/LDSC/GWAS/plots stages can stay
+# source-agnostic. Returned data.table schema: code, title, chapter_range,
+# chapter (matching the current icd10_categories.csv schema).
+load_trait_categories <- function(config, sex) {
+  if (identical(sex, "bothsex_meta")) {
+    rda <- config$bothsex_meta$manifest_rda %||%
+           file.path(config$paths$manifest_dir, "bothsex_meta_manifest.rda")
+    if (!is_absolute_path(rda)) {
+      rda <- file.path(config$project$root %||% getwd(), rda)
+    }
+    if (!file.exists(rda)) {
+      log_fatal("setup", sprintf("bothsex_meta manifest .rda not found: %s. Run scripts/generate_bothsex_meta_manifest.R.", rda))
+    }
+    env <- new.env()
+    load(rda, envir = env)
+    objs <- ls(env)
+    if (length(objs) != 1L) {
+      stop(sprintf("load_trait_categories: expected exactly 1 object in %s, got %d",
+                   basename(rda), length(objs)))
+    }
+    m <- as.data.table(get(objs[1], envir = env))
+    prefix <- regmatches(m$phenotype,
+                         regexpr("^[A-Z]+[0-9]+_?", m$phenotype, perl = TRUE))
+    if (length(prefix) != nrow(m)) {
+      # regmatches with vector input returns only matched entries; pad NAs for
+      # rows without a parseable prefix
+      prefix_full <- character(nrow(m))
+      raw <- regexpr("^[A-Z]+[0-9]+_?", m$phenotype, perl = TRUE)
+      for (i in seq_len(nrow(m))) {
+        if (raw[i] > 0L) {
+          prefix_full[i] <- substr(m$phenotype[i], 1L,
+                                   raw[i] + attr(raw, "match.length")[i] - 1L)
+        } else {
+          prefix_full[i] <- NA_character_
+        }
+      }
+      prefix <- prefix_full
+    }
+    return(data.table(
+      code          = m$phenotype,
+      title         = if ("name" %in% names(m)) m$name else m$phenotype,
+      chapter_range = prefix,
+      chapter       = m$chapter
+    ))
+  }
+  fread(file.path(config$paths$meta_dir, "icd10_categories.csv"))
+}
+
 # --- rsID Mapping ---
 
 load_variants_manifest <- function(path) {
@@ -310,19 +585,26 @@ filter_variants <- function(dt, maf_threshold = 0.01, info_threshold = NULL) {
 # --- Polarity Check ---
 
 check_polarity_sentinel <- function(dt, sentinel_rsid = NULL, expected_a1 = NULL) {
+  # Returns list with polarity_correct (logical/NA), message (chr), and
+  # sentinel_missing (logical). The sentinel_missing flag lets callers escalate
+  # the "not found" case to WARN (e.g. post-liftover for bothsex_meta) instead
+  # of accepting the silent DEBUG default.
   if (is.null(sentinel_rsid) || is.null(expected_a1)) {
     return(list(polarity_correct = NA,
-                message = "polarity check skipped (no sentinel configured)"))
+                message = "polarity check skipped (no sentinel configured)",
+                sentinel_missing = FALSE))
   }
   row <- dt[SNP == sentinel_rsid]
   if (nrow(row) == 0) {
     return(list(polarity_correct = NA,
-                message = sprintf("Sentinel SNP %s not found", sentinel_rsid)))
+                message = sprintf("Sentinel SNP %s not found", sentinel_rsid),
+                sentinel_missing = TRUE))
   }
   correct <- row$A1[1] == expected_a1
   list(polarity_correct = correct,
        message = sprintf("Sentinel %s: A1=%s (expected %s)",
-                         sentinel_rsid, row$A1[1], expected_a1))
+                         sentinel_rsid, row$A1[1], expected_a1),
+       sentinel_missing = FALSE)
 }
 
 # --- A Priori Model Building ---
@@ -330,13 +612,17 @@ check_polarity_sentinel <- function(dt, sentinel_rsid = NULL, expected_a1 = NULL
 build_apriori_model <- function(traits, categories, min_indicators = 2,
                                 ordering_table = NULL,
                                 add_factor_covariances = TRUE,
-                                add_heywood_constraints = TRUE) {
-  bad_nchar <- nchar(traits) != 3L
-  if (any(bad_nchar)) {
-    log_warn("cfa", sprintf(
-      "build_apriori_model: dropping %d non-3-char trait(s): %s",
-      sum(bad_nchar), paste(traits[bad_nchar], collapse = ", ")))
-    traits <- traits[!bad_nchar]
+                                add_heywood_constraints = TRUE,
+                                code_format = c("icd3", "free")) {
+  code_format <- match.arg(code_format)
+  if (identical(code_format, "icd3")) {
+    bad_nchar <- nchar(traits) != 3L
+    if (any(bad_nchar)) {
+      log_warn("cfa", sprintf(
+        "build_apriori_model: dropping %d non-3-char trait(s): %s",
+        sum(bad_nchar), paste(traits[bad_nchar], collapse = ", ")))
+      traits <- traits[!bad_nchar]
+    }
   }
   if (length(traits) == 0L) return("")
   mapping <- categories[code %in% traits, .(code, chapter)]
@@ -532,13 +818,23 @@ compute_loading_diff <- function(male_loading, male_se, female_loading, female_s
 # --- Stage Manifests ---
 
 write_stage_manifest <- function(stage, sex, config, output_files, warnings = character(0)) {
+  # Hash includes source-specific config (panukb / bothsex_meta) so editing the
+  # source block correctly invalidates --resume on the next run. should_skip()
+  # in run_pipeline.R falls back to compat / legacy hashes for older manifests.
+  source_key <- switch(sex,
+                       bothsex      = "panukb",
+                       bothsex_meta = "bothsex_meta",
+                       NULL)
+  source_cfg <- if (is.null(source_key)) NULL else config[[source_key]]
   manifest <- list(
     stage = stage,
     sex = sex,
     completed_at = format(Sys.time(), "%Y-%m-%dT%H:%M:%S"),
     run_id = .log_env$run_id %||% "unknown",
     config_hash = digest::digest(
-      list(stage = config[[stage]] %||% list(), paths = config$paths),
+      list(stage = config[[stage]] %||% list(),
+           paths = config$paths,
+           source = source_cfg),
       algo = "sha256"),
     output_files = basename(output_files),
     traits_processed = length(output_files),
@@ -571,12 +867,47 @@ discover_traits <- function(config, sex) {
     files <- list.files(dir_path, pattern = pat, full.names = FALSE)
     return(sub("^icd10-(.*)-both_sexes\\.tsv\\.bgz$", "\\1", files))
   }
+  if (identical(sex, "bothsex_meta")) {
+    # Bothsex_meta dir mixes two file types from the same FinnGen release:
+    # <TRAIT>_meta_out.tsv.gz (2-way FG+UKBB meta) and <TRAIT>_fg.tsv.gz
+    # (FG-only single-cohort GWAS). Strip whichever suffix to recover trait ID.
+    # See discover_traits_with_type() for the (trait, file_type) shape used by
+    # run_munge_bothsex_meta to dispatch per-file.
+    pat <- config$discover$bothsex_meta_filename_pattern %||%
+           "^[A-Z][A-Z0-9_]+_(meta_out|fg)\\.tsv\\.gz$"
+    files <- list.files(dir_path, pattern = pat, full.names = FALSE)
+    return(sub("_(meta_out|fg)\\.tsv\\.gz$", "", files))
+  }
   # Filename pattern is config-driven so non-Neale inputs can be plugged in.
   # Stored under config$discover (not config$munge) so the munge stage hash is
   # unaffected by adding/changing this key -- prevents stale-manifest invalidation.
   pat <- config$discover$sumstats_filename_pattern %||% "\\.gwas\\.imputed_v3\\."
   files <- list.files(dir_path, pattern = pat, full.names = FALSE)
   sub(paste0(pat, ".*"), "", files)
+}
+
+# bothsex_meta-only helper. Returns data.table(trait, file_type, file_path)
+# where file_type is "meta" (file ends in _meta_out.tsv.gz, i.e. 2-way
+# FG+UKBB inverse-variance meta) or "fg" (file ends in _fg.tsv.gz, i.e. raw
+# single-cohort FinnGen GWAS). The two file types have different schemas and
+# need different munge code paths (see run_munge_bothsex_meta).
+discover_traits_with_type <- function(config) {
+  dir_path <- file.path(config$paths$sumstats_dir, "bothsex_meta")
+  pat <- config$discover$bothsex_meta_filename_pattern %||%
+         "^[A-Z][A-Z0-9_]+_(meta_out|fg)\\.tsv\\.gz$"
+  files <- list.files(dir_path, pattern = pat, full.names = FALSE)
+  if (length(files) == 0L) {
+    return(data.table::data.table(trait = character(0),
+                                   file_type = character(0),
+                                   file_path = character(0)))
+  }
+  is_meta <- grepl("_meta_out\\.tsv\\.gz$", files)
+  is_fg   <- grepl("_fg\\.tsv\\.gz$", files)
+  file_type <- ifelse(is_meta, "meta", ifelse(is_fg, "fg", NA_character_))
+  trait <- sub("_(meta_out|fg)\\.tsv\\.gz$", "", files)
+  data.table::data.table(trait     = trait,
+                          file_type = file_type,
+                          file_path = file.path(dir_path, files))
 }
 
 get_shared_traits <- function(config) {
@@ -590,6 +921,8 @@ get_shared_traits <- function(config) {
 get_case_control <- function(config, sex, trait) {
   manifest_file <- if (identical(sex, "bothsex")) {
     file.path(config$paths$manifest_dir, "panukb_bothsex_manifest.rda")
+  } else if (identical(sex, "bothsex_meta")) {
+    file.path(config$paths$manifest_dir, "bothsex_meta_manifest.rda")
   } else {
     file.path(config$paths$manifest_dir, paste0("neale_", sex, "_manifest.rda"))
   }
@@ -604,5 +937,11 @@ get_case_control <- function(config, sex, trait) {
   manifest <- get(objs[1], envir = env)
   row <- manifest[manifest$phenotype == trait, ]
   if (nrow(row) == 0) stop(sprintf("Trait %s not found in %s manifest", trait, sex))
-  list(n_cases = row$n_cases[1], n_controls = row$n_controls[1])
+  # For bothsex_meta, also return the full row so callers can compute per-SNP
+  # Neff using per-cohort counts. row[1,] is a single-row data.frame.
+  out <- list(n_cases = row$n_cases[1], n_controls = row$n_controls[1])
+  if (identical(sex, "bothsex_meta")) {
+    out$manifest_row <- as.list(row[1, , drop = FALSE])
+  }
+  out
 }
