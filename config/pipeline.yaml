@@ -109,7 +109,9 @@ discover:
   bothsex_meta_filename_pattern: "^[A-Z][A-Z0-9_]+_(meta_out|fg)\\.tsv\\.gz$"
 
 ldsc:
-  h2_z_threshold: 3.0
+  h2_z_threshold: 4.25       # starting threshold; raised adaptively if Frobenius > halt
+  h2_z_step: 0.5             # increment per adaptive retry
+  h2_z_max: 10.0             # give up if threshold exceeds this
   liability_scale: true
   pop_prev_source: ukb_cohort
   min_factors_required: 2
@@ -122,7 +124,7 @@ efa:
 cfa:
   estimator: DWLS
   model_source: both
-  min_indicators_per_factor: 3
+  min_indicators_per_factor: 1
   apriori_source: icd10_chapters
 
 comparison:

@@ -11,7 +11,7 @@ suppressPackageStartupMessages({
 })
 
 setwd("notebooks")
-manifest_path <- "../manifest/Pan-UK Biobank phenotype manifest - phenotype_manifest.csv"
+manifest_path <- "../manifest/panukb_phenotype_manifest.csv"
 rda_path      <- "../manifest/bothsex_ARD.rda"
 dest_dir      <- "../sumstats/bothsex"
 csv_out       <- "bothsex_ARD_panukb_icd10_filtered.csv"
@@ -69,7 +69,7 @@ print(ard_icd10)
 # Keep only Pan-UKB ICD10 GWAS that (a) match an ARD ICD10 code and
 # (b) have EUR h2 Z-score > 4 (sldsc_25bin_h2_z_EUR) -- the Pan-UKB-recommended
 # heritability-significance threshold.
-Z_MIN <- 3
+Z_MIN <- 0.01
 
 matched <- manifest |>
   dplyr::filter(trait_type == "icd10", phenocode %in% ard_icd10) |>

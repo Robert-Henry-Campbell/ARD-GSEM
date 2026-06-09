@@ -116,41 +116,64 @@ run_ldsc <- function(config, sex) {
     }
   }
 
-  retained <- h2_table[pass == TRUE]$trait
-  log_info("ldsc", sprintf("Traits retained: %d/%d (%s)",
-                           length(retained), length(trait_names), paste(retained, collapse = ", ")))
+  halt_thresh <- config$munge$smoothing_frob_halt %||% 0.025
+  z_thresh    <- config$ldsc$h2_z_threshold
+  z_step      <- config$ldsc$h2_z_step %||% 0.5
+  z_max       <- config$ldsc$h2_z_max  %||% 10.0
 
-  if (length(retained) < 2) {
-    log_fatal("ldsc", "Fewer than 2 traits passed h2 filter; cannot proceed")
-  }
+  smoothed   <- FALSE
+  keep_idx   <- NULL
+  S_filtered <- NULL
+  S_raw      <- NULL
 
-  keep_idx <- which(trait_names %in% retained)
-  S_filtered <- S[keep_idx, keep_idx, drop = FALSE]
-  S_raw <- S_filtered
+  repeat {
+    retained   <- h2_table[z >= z_thresh]$trait
+    keep_idx   <- which(trait_names %in% retained)
+    S_filtered <- S[keep_idx, keep_idx, drop = FALSE]
+    S_raw      <- S_filtered
 
-  psd_ok <- check_psd(S_filtered)
-  smoothed <- FALSE
-  if (psd_ok) {
-    log_info("ldsc", sprintf("S matrix (%dx%d): all eigenvalues positive (PSD confirmed)",
-                             nrow(S_filtered), ncol(S_filtered)))
-  } else {
+    if (length(retained) < 2) {
+      log_fatal("ldsc", sprintf(
+        "Fewer than 2 traits pass h2_z_threshold=%.2f; cannot proceed", z_thresh))
+    }
+
+    if (check_psd(S_filtered)) {
+      log_info("ldsc", sprintf("S matrix (%dx%d): all eigenvalues positive (PSD confirmed) at z_thresh=%.2f",
+                               nrow(S_filtered), ncol(S_filtered), z_thresh))
+      break
+    }
+
     log_warn("ldsc", "S matrix is NOT positive semi-definite; applying Matrix::nearPD smoothing")
     smoothed_result <- Matrix::nearPD(S_filtered, corr = FALSE, keepDiag = TRUE,
                                        ensureSymmetry = TRUE)
-    S_filtered <- as.matrix(smoothed_result$mat)
-    frob_delta <- sqrt(sum((S_filtered - S_raw)^2))
+    S_filtered  <- as.matrix(smoothed_result$mat)
+    frob_delta  <- sqrt(sum((S_filtered - S_raw)^2))
     log_info("ldsc", sprintf("nearPD smoothing: Frobenius-norm delta = %.4g; %d iterations",
                              frob_delta, smoothed_result$iterations))
     log_warn("ldsc",
              "PSD smoothing applied to S only; V (sampling-covariance matrix of vech(S)) is unchanged. Downstream sandwich SEs in userGWAS may be slightly biased -- see GenomicSEM wiki on Matrix::nearPD use.")
-    halt_thresh <- config$munge$smoothing_frob_halt %||% 0.025
-    if (frob_delta > halt_thresh) {
-      log_fatal("ldsc", sprintf(
-        "Frobenius-norm smoothing delta %.4g > halt threshold %.4g (Wiki 3). Raise h2_z_threshold or remove underpowered traits.",
-        frob_delta, halt_thresh))
+
+    if (frob_delta <= halt_thresh) {
+      smoothed <- TRUE
+      break
     }
-    smoothed <- TRUE
+
+    new_thresh <- z_thresh + z_step
+    if (new_thresh > z_max) {
+      log_fatal("ldsc", sprintf(
+        "Frobenius-norm smoothing delta %.4g > halt threshold %.4g even after raising h2_z_threshold to %.2f (z_max=%.2f). Consider lowering smoothing_frob_halt or checking input data.",
+        frob_delta, halt_thresh, z_thresh, z_max))
+    }
+    log_warn("ldsc", sprintf(
+      "Frobenius-norm delta %.4g > halt threshold %.4g; raising h2_z_threshold %.2f -> %.2f and retrying",
+      frob_delta, halt_thresh, z_thresh, new_thresh))
+    z_thresh <- new_thresh
   }
+
+  h2_table[, pass := z >= z_thresh]
+  log_info("ldsc", sprintf("Traits retained: %d/%d (%s) [final h2_z_threshold=%.2f]",
+                           length(retained), length(trait_names),
+                           paste(retained, collapse = ", "), z_thresh))
 
   if (!is.null(I)) {
     max_offdiag <- max(abs(I[upper.tri(I)]))
