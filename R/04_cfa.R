@@ -1,6 +1,12 @@
 run_cfa <- function(config, sex, ldsc_results = NULL, efa_results = NULL) {
   log_info("cfa", sprintf("=== CFA stage: %s ===", sex))
 
+  # Defensible split-sample path: if the EFA discovery structure + even-half covstruc +
+  # pinned domains are present, run the held-out bake-off and lock the bifactor spec.
+  # Otherwise fall through to the legacy EFA/a-priori CFA (used for sexes without a split).
+  bakeoff <- run_cfa_bakeoff(config, sex)
+  if (!is.null(bakeoff)) return(bakeoff)
+
   if (is.null(ldsc_results)) {
     ldsc_path <- file.path(config$paths$output_dir, sex, "ldsc", "ldsc_full.rds")
     ldsc_output <- readRDS(ldsc_path)
@@ -163,4 +169,92 @@ extract_fit <- function(model_result) {
     chisq = as.numeric(pick("chisq", "Chisq", "CHISQ")),
     df = as.integer(pick("df", "DF"))
   )
+}
+
+# --- Split-sample confirmatory bake-off + model lock (defensible ARD GSEM) ---
+# Structure discovered on ODD (03_efa) is CONFIRMED on the held-out EVEN half, then the
+# winning bifactor is re-fit on FULL and its GWAS spec saved. Returns NULL if the
+# split-sample inputs are absent (caller falls back to the legacy CFA path).
+# Skill basis: 03_interpretation (same-S comparison, CFI/SRMR/AIC + Δχ², anomaly checks).
+
+extract_fit_row <- function(fit, key) {
+  if (is.null(fit)) return(NULL)
+  mf <- fit$modelfit
+  r <- as.data.table(fit$results); setnames(r, tolower(names(r)))
+  ec <- grep("std_genotype$|std_all$", names(r), value = TRUE)[1]
+  sl <- if (!is.na(ec)) r[op == "=~" & grepl("^S[0-9]", lhs), as.numeric(get(ec))] else numeric(0)
+  gg <- if (!is.na(ec)) r[op == "=~" & lhs == "ARD", as.numeric(get(ec))] else numeric(0)
+  data.table(model = key, CFI = mf$CFI, SRMR = mf$SRMR, chisq = mf$chisq, df = mf$df, AIC = mf$AIC,
+             spec_neg = sum(sl < 0, na.rm = TRUE), spec_tiny = sum(abs(sl) < 0.1, na.rm = TRUE),
+             gen_load_mean = if (length(gg)) mean(gg, na.rm = TRUE) else NA_real_)
+}
+
+run_cfa_bakeoff <- function(config, sex) {
+  ldsc_dir <- file.path(config$paths$output_dir, sex, "ldsc")
+  out_dir  <- file.path(config$paths$output_dir, sex, "cfa")
+  cand_path <- file.path(config$paths$output_dir, sex, "efa", "candidate_structures.rds")
+  even_path <- file.path(ldsc_dir, "ldsc_even.rds")
+  if (!file.exists(cand_path) || !file.exists(even_path) || is.null(config$cfa$domains)) return(NULL)
+  dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
+
+  cand <- readRDS(cand_path); broad <- cand$broad
+  ld_even <- readRDS(even_path); ld_full <- readRDS(file.path(ldsc_dir, "ldsc_full.rds"))
+  est <- config$cfa$estimator %||% "DWLS"
+  fit_even <- function(model, label) tryCatch(
+    suppressWarnings(GenomicSEM::usermodel(covstruc = ld_even, model = model, estimation = est, std.lv = TRUE)),
+    error = function(e) { log_warn("cfa", sprintf("%s failed: %s", label, conditionMessage(e))); NULL })
+
+  domains <- lapply(config$cfa$domains, function(v) intersect(as.character(v), broad))
+  domains <- domains[vapply(domains, length, integer(1)) >= 2L]
+  core <- unlist(domains, use.names = FALSE)
+  log_info("cfa", sprintf("Split-sample confirm on EVEN half: general set=%d traits; %d domain(s): %s",
+                          length(broad), length(domains),
+                          paste(sprintf("%s(%d)", names(domains), lengths(domains)), collapse = ", ")))
+
+  rvv <- function(v) c(sprintf("%s ~~ rvv_%s*%s", v, v, v), sprintf("rvv_%s > 0.001", v))
+  umb_b <- paste(c(paste0("ARD =~ ", paste(broad, collapse = " + ")), rvv(broad)), collapse = "\n")
+  bif   <- build_bifactor_model(broad, domains, "ARD", add_snp = FALSE, heywood = TRUE)
+  umb_c <- paste(c(paste0("ARD =~ ", paste(core, collapse = " + ")), rvv(core)), collapse = "\n")
+  corr  <- paste(c(vapply(seq_along(domains), function(i)
+                   paste0("F", i, " =~ ", paste(domains[[i]], collapse = " + ")), character(1)), rvv(core)),
+                 collapse = "\n")
+  hier  <- build_hierarchical_model(setNames(domains, paste0("F", seq_along(domains))), "ARD", heywood = TRUE)
+
+  tab <- rbindlist(list(
+    extract_fit_row(fit_even(umb_b, "umbrella (broad)"),        "umbrella_broad"),
+    extract_fit_row(fit_even(bif,   "bifactor (broad)"),        "bifactor_broad"),
+    extract_fit_row(fit_even(umb_c, "umbrella (core)"),         "umbrella_core"),
+    extract_fit_row(fit_even(corr,  "correlated (core)"),       "correlated_core"),
+    extract_fit_row(fit_even(hier,  "hierarchical (core)"),     "hierarchical_core")), fill = TRUE)
+  log_info("cfa", "Held-out (EVEN) model comparison:")
+  for (i in seq_len(nrow(tab)))
+    log_info("cfa", sprintf("  %-18s CFI=%.3f SRMR=%.3f AIC=%.0f | spec neg/tiny=%d/%d",
+                            tab$model[i], tab$CFI[i], tab$SRMR[i], tab$AIC[i], tab$spec_neg[i], tab$spec_tiny[i]))
+  ub <- tab[model == "umbrella_broad"]; bf <- tab[model == "bifactor_broad"]
+  if (nrow(ub) && nrow(bf)) {
+    dchi <- ub$chisq - bf$chisq; ddf <- ub$df - bf$df; pv <- pchisq(dchi, ddf, lower.tail = FALSE)
+    log_info("cfa", sprintf("  Delta-chisq umbrella vs bifactor: dchi=%.1f ddf=%d p=%.2e -> structure %s the umbrella",
+                            dchi, ddf, pv, if (pv < 0.05) "significantly beats" else "does NOT beat"))
+  }
+  fwrite(tab, file.path(out_dir, "fit_comparison.csv"))
+
+  bif_full <- tryCatch(suppressWarnings(GenomicSEM::usermodel(covstruc = ld_full, model = bif, estimation = est, std.lv = TRUE)),
+                       error = function(e) { log_error("cfa", sprintf("full bifactor fit failed: %s", conditionMessage(e))); NULL })
+  if (!is.null(bif_full)) {
+    fr <- extract_fit_row(bif_full, "bifactor_full")
+    log_info("cfa", sprintf("Locked bifactor on FULL: CFI=%.3f SRMR=%.3f spec neg/tiny=%d/%d gen-load mean=%.2f",
+                            fr$CFI, fr$SRMR, fr$spec_neg, fr$spec_tiny, fr$gen_load_mean))
+    saveRDS(bif_full, file.path(out_dir, "model_bifactor_full.rds"))
+    fwrite(fr, file.path(out_dir, "bifactor_full_fit.csv"))
+  }
+  factors <- c("ARD", names(domains))
+  spec <- list(general_name = "ARD", general_traits = broad, domains = domains, factors = factors,
+               measurement_model = bif,
+               gwas_model = build_bifactor_model(broad, domains, "ARD", add_snp = TRUE, heywood = TRUE),
+               sub = paste0(factors, " ~ SNP"))
+  saveRDS(spec, file.path(out_dir, "model_spec.rds"))
+  log_info("cfa", sprintf("Saved model_spec.rds -- bifactor GWAS over %d factor(s): %s",
+                          length(factors), paste(factors, collapse = ", ")))
+  write_stage_manifest("cfa", sex, config, list.files(out_dir, full.names = TRUE))
+  invisible(list(fit_comparison = tab, spec = spec))
 }

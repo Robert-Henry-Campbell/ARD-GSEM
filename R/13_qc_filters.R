@@ -123,9 +123,7 @@ run_qc_filters <- function(config, sex) {
     pass <- base[!SNP %in% dropped_all]
 
     qc_pass_path <- file.path(out_dir, sprintf("%s_qc_pass.tsv.gz", f))
-    gz <- gzfile(qc_pass_path, "wt")
-    fwrite(pass, gz, sep = "\t")
-    close(gz)
+    fwrite(pass, qc_pass_path, sep = "\t", compress = "gzip")
 
     summary_rows[[f]] <- data.table(
       factor = f,

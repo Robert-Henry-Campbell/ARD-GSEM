@@ -53,9 +53,7 @@ run_factor_ldsc <- function(config, sex) {
     dt <- dt[!is.na(SNP) & !is.na(Z) & !is.na(P) & is.finite(Z) & is.finite(P)]
     dt <- dt[A1 %in% c("A","C","G","T") & A2 %in% c("A","C","G","T")]
     sumstats_path <- file.path(out_dir, sprintf("%s.sumstats.gz", f))
-    gz <- gzfile(sumstats_path, "wt")
-    fwrite(dt, gz, sep = "\t")
-    close(gz)
+    fwrite(dt, sumstats_path, sep = "\t", compress = "gzip")
     log_info("factor_ldsc", sprintf("factor %s: %s SNPs written; N_hat=%.0f",
                                      f, format(nrow(dt), big.mark = ","), nhat))
 
