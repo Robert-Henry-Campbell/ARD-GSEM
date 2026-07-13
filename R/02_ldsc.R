@@ -46,10 +46,64 @@ run_ldsc <- function(config, sex) {
   out_dir <- file.path(config$paths$output_dir, sex, "ldsc")
   dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
   munged_files_abs <- normalizePath(munged_files, mustWork = TRUE)
+
+  # --- Published-h2-Z pre-filter (before ldsc; keeps the block-jackknife valid) ---
+  # GenomicSEM inflates n.blocks to ~k(k+1)/2 when n.traits>18, so >~43 traits -> tiny
+  # blocks -> corrupted SEs. Select on the PUBLISHED h2-Z (Pan-UKB EUR / Neale both_sexes),
+  # floored at published_h2_z_min and capped to the block budget. The existing post-ldsc
+  # own-z gate + Frobenius loop below then do final QC on this valid set.
+  h2_source  <- config$ldsc$h2_z_source %||% "published"
+  max_blocks <- config$ldsc$max_jackknife_blocks %||% 1000L
+  k_max      <- max_traits_for_blocks(max_blocks)
+  if (identical(h2_source, "published")) {
+    z_min <- config$ldsc$published_h2_z_min %||% 4.0
+    pub   <- published_h2z(config, sex, trait_names)
+    pubz  <- pub$pub_h2_z[match(trait_names, pub$trait)]
+    if (all(is.na(pubz))) {
+      log_warn("ldsc", sprintf(
+        "No published h2-Z source for sex=%s; skipping published pre-filter (%d traits)", sex, length(trait_names)))
+      if (length(trait_names) > k_max) {
+        log_warn("ldsc", sprintf(
+          "%d traits > k_max=%d -> GenomicSEM will set n.blocks=%d (>%d); SEs may be biased",
+          length(trait_names), k_max, n_jackknife_blocks(length(trait_names)), max_blocks))
+      }
+    } else {
+      keep   <- which(!is.na(pubz) & pubz >= z_min)
+      capped <- length(keep) > k_max
+      if (capped) keep <- sort(keep[order(pubz[keep], decreasing = TRUE)][seq_len(k_max)])
+      fwrite(data.table(trait = trait_names, pub_h2_z = pubz,
+                        pub_h2_confidence = pub$pub_h2_confidence[match(trait_names, pub$trait)],
+                        selected = seq_along(trait_names) %in% keep),
+             file.path(out_dir, "h2_screen.csv"))
+      src_lbl <- if (identical(sex, "bothsex")) "Pan-UKB EUR" else "Neale both_sexes"
+      if (length(keep) < 2L) {
+        log_fatal("ldsc", sprintf(
+          "Published-h2-Z filter (%s, z>=%.2f) kept %d trait(s); need >=2. See %s.",
+          src_lbl, z_min, length(keep), file.path(out_dir, "h2_screen.csv")))
+      }
+      log_info("ldsc", sprintf(
+        "Published-h2-Z pre-filter (%s): %d -> %d traits (z>=%.2f, effective z=%.2f%s; n.blocks=%d, budget=%d)",
+        src_lbl, length(trait_names), length(keep), z_min, min(pubz[keep]),
+        if (capped) sprintf(", capped to k_max=%d", k_max) else "",
+        n_jackknife_blocks(length(keep)), max_blocks))
+      munged_files_abs <- munged_files_abs[keep]
+      trait_names      <- trait_names[keep]
+      sample_prevs     <- sample_prevs[keep]
+      pop_prevs        <- pop_prevs[keep]
+    }
+  } else {
+    log_info("ldsc", sprintf("h2_z_source=computed: no published-z pre-filter (%d traits)", length(trait_names)))
+    if (length(trait_names) > k_max) {
+      log_warn("ldsc", sprintf(
+        "computed mode: %d traits > k_max=%d -> GenomicSEM n.blocks=%d (>%d); SEs may be biased",
+        length(trait_names), k_max, n_jackknife_blocks(length(trait_names)), max_blocks))
+    }
+  }
+
   saved_wd <- getwd()
   # Attempt stand=TRUE for standardized loadings (S_Stand / V_Stand). On the V_Stand
   # crash (occurs when any h2 estimate is near-zero / negative), fall back to FALSE.
-  call_ldsc <- function(stand_flag) {
+  call_ldsc <- function(stand_flag, select = FALSE) {
     GenomicSEM::ldsc(
       traits = munged_files_abs,
       sample.prev = sample_prevs,
@@ -57,7 +111,8 @@ run_ldsc <- function(config, sex) {
       ld = ld_path,
       wld = wld_path,
       trait.names = trait_names,
-      stand = stand_flag
+      stand = stand_flag,
+      select = select
     )
   }
   ldsc_output <- tryCatch({
@@ -76,6 +131,27 @@ run_ldsc <- function(config, sex) {
     }
     out
   }, finally = setwd(saved_wd))
+
+  # --- Split-sample halves for defensible EFA/CFA (structure from odd, confirmed on
+  # even; see docs plan). GenomicSEM::ldsc(select=) restricts LD scores + weights + M
+  # to odd/even chromosomes, so each half is an independent-genome covstruc over the
+  # SAME trait set. Saved beside ldsc_full.rds for 03_efa (odd) and 04_cfa (even). ---
+  if (isTRUE(config$ldsc$chr_split)) {
+    for (half in c("ODD", "EVEN")) {
+      log_info("ldsc", sprintf("chr_split: %s-chromosome LDSC (%d traits) for split-sample EFA/CFA...",
+                               half, length(trait_names)))
+      half_out <- tryCatch({
+        setwd(out_dir)
+        tryCatch(call_ldsc(TRUE, half), error = function(e) {
+          log_warn("ldsc", sprintf("chr_split %s stand=TRUE failed (%s); stand=FALSE",
+                                    half, conditionMessage(e)))
+          call_ldsc(FALSE, half)
+        })
+      }, finally = setwd(saved_wd))
+      saveRDS(half_out, file.path(out_dir, sprintf("ldsc_%s.rds", tolower(half))))
+      log_info("ldsc", sprintf("chr_split: saved ldsc_%s.rds", tolower(half)))
+    }
+  }
 
   S <- ldsc_output$S
   V <- ldsc_output$V

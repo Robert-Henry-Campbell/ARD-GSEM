@@ -9,6 +9,19 @@ run_munge_neale <- function(config, sex) {
 
   variants_manifest <- load_variants_manifest(config$paths$variants_manifest)
   traits <- discover_traits(config, sex)
+
+  # Neff floor + trait summary table (one row per discovered trait). Traits below
+  # config$munge$neff_min are dropped here, before the expensive HM3 join.
+  summary_dt <- munge_trait_summary(config, sex, traits)
+  write_trait_summary(config, sex, summary_dt)
+  kept <- summary_dt[included == TRUE]$trait
+  if (length(kept) < length(traits)) {
+    log_info("munge", sprintf("Neff>=%.0f filter (%s): keeping %d of %d traits",
+                              config$munge$neff_min %||% 0, sex, length(kept), length(traits)))
+  }
+  remove_stale_munged(config, sex, setdiff(summary_dt$trait, kept))
+  traits <- kept
+
   munged_files <- character(0)
   warnings_list <- character(0)
 
@@ -164,6 +177,18 @@ run_munge_panukb <- function(config) {
   }
   log_info("munge", sprintf("Pan-UKB traits discovered: %s",
                             paste(traits, collapse = ", ")))
+
+  # Neff floor + trait summary table (one row per discovered trait). Traits below
+  # config$munge$neff_min are dropped here, before the expensive per-SNP work.
+  summary_dt <- munge_trait_summary(config, sex, traits)
+  write_trait_summary(config, sex, summary_dt)
+  kept <- summary_dt[included == TRUE]$trait
+  if (length(kept) < length(traits)) {
+    log_info("munge", sprintf("Neff>=%.0f filter (bothsex): keeping %d of %d traits",
+                              config$munge$neff_min %||% 0, length(kept), length(traits)))
+  }
+  remove_stale_munged(config, sex, setdiff(summary_dt$trait, kept))
+  traits <- kept
 
   col_defaults <- list(chr = "chr", pos = "pos", ref = "ref", alt = "alt",
                        beta = "beta_EUR", se = "se_EUR",
@@ -376,6 +401,7 @@ run_munge_bothsex_meta <- function(config) {
 
   munged_files <- character(0)
   warnings_list <- character(0)
+  n_excluded <- 0L   # traits intentionally dropped by the Neff floor (not failures)
 
   for (i in seq_len(nrow(traits_dt))) {
     trait <- traits_dt$trait[i]
@@ -405,20 +431,27 @@ run_munge_bothsex_meta <- function(config) {
     if (isTRUE(result$success)) {
       munged_files <- c(munged_files, result$munged_path)
     }
+    if (isTRUE(result$excluded)) {
+      n_excluded <- n_excluded + 1L
+    }
     if (!is.null(result$warning)) {
       warnings_list <- c(warnings_list, result$warning)
     }
   }
 
-  log_info("munge", sprintf("Munge complete: %d/%d bothsex_meta traits processed",
-                            length(munged_files), nrow(traits_dt)))
+  # Neff-floor exclusions are intentional, so they count as "done" for the
+  # completeness check -- otherwise --resume would retry the stage forever.
+  n_expected <- nrow(traits_dt) - n_excluded
+  log_info("munge", sprintf(
+    "Munge complete: %d/%d bothsex_meta traits munged (%d excluded by Neff>=%.0f)",
+    length(munged_files), nrow(traits_dt), n_excluded, config$munge$neff_min %||% 0))
 
-  if (length(munged_files) == nrow(traits_dt)) {
+  if (length(munged_files) == n_expected) {
     write_stage_manifest("munge", sex, config, munged_files, warnings_list)
   } else {
     log_warn("munge", sprintf(
-      "Only %d/%d bothsex_meta traits munged; NOT writing stage manifest so --resume will retry.",
-      length(munged_files), nrow(traits_dt)))
+      "Only %d/%d expected bothsex_meta traits munged; NOT writing stage manifest so --resume will retry.",
+      length(munged_files), n_expected))
   }
 
   list(munged_files = munged_files, traits = traits_dt$trait,
@@ -623,6 +656,13 @@ run_munge_bothsex_meta <- function(config) {
     log_warn("munge", sprintf("%s bothsex_meta [meta]: median per-SNP Neff is NA/0; skipping", trait))
     return(list(success = FALSE, warning = sprintf("%s: Neff NA", trait)))
   }
+  neff_min <- config$munge$neff_min %||% 0
+  if (neff_scalar < neff_min) {
+    log_info("munge", sprintf("%s bothsex_meta [meta]: Neff=%.0f < neff_min=%.0f; excluding",
+                              trait, neff_scalar, neff_min))
+    return(list(success = FALSE, excluded = TRUE,
+                warning = sprintf("%s: Neff=%.0f < neff_min", trait, neff_scalar)))
+  }
   if (neff_scalar < 1000) {
     log_warn("munge", sprintf("%s bothsex_meta [meta]: median per-SNP Neff=%.0f (very low)",
                               trait, neff_scalar))
@@ -724,6 +764,13 @@ run_munge_bothsex_meta <- function(config) {
     log_warn("munge", sprintf("%s bothsex_meta [fg]: Neff NA/0 (n_cases=%s, n_controls=%s); skipping",
                               trait, as.character(n_cases_fg), as.character(n_controls_fg)))
     return(list(success = FALSE, warning = sprintf("%s: Neff NA", trait)))
+  }
+  neff_min <- config$munge$neff_min %||% 0
+  if (neff_scalar < neff_min) {
+    log_info("munge", sprintf("%s bothsex_meta [fg]: Neff=%.0f < neff_min=%.0f; excluding",
+                              trait, neff_scalar, neff_min))
+    return(list(success = FALSE, excluded = TRUE,
+                warning = sprintf("%s: Neff=%.0f < neff_min", trait, neff_scalar)))
   }
   if (neff_scalar < 1000) {
     log_warn("munge", sprintf("%s bothsex_meta [fg]: Neff=%.0f (very low)",

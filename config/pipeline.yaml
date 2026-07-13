@@ -17,6 +17,9 @@ paths:
   # PLINK bfile prefix (no .bed/.bim/.fam extension) for --clump in post-hoc Q_SNP filter.
   thousand_g_plink_bfile: reference/1000g_plink/EUR
   panukb_variants_manifest: manifest/full_variant_qc_metrics.txt.bgz
+  # Neale round-2 SNP-heritability topline (h2_z + confidence per phenotype; both_sexes
+  # for ICD10). Used to select male/female traits by PUBLISHED h2-Z before ldsc().
+  neale_h2_topline: manifest/ukb31063_h2_topline.02Oct2019.tsv.gz
 
 panukb:
   phenotype_manifest: manifest/panukb_phenotype_manifest.csv
@@ -85,6 +88,10 @@ bothsex_meta:
 
 munge:
   use_neff: true
+  # Minimum effective sample size (Neff = 4 / (1/N_cases + 1/N_controls)) for a
+  # trait to enter the model. Traits below this are dropped at munge (before the
+  # expensive HM3 join) and never reach ldsc/efa/cfa/gwas. Set 0 to disable.
+  neff_min: 5000
   maf_threshold: 0.01
   # linear -> log(OR) conversion thresholds. Warn when sample prevalence K is below
   # K_warn_threshold (or above 1 - K_warn_threshold); reject when K(1-K) is below
@@ -109,23 +116,52 @@ discover:
   bothsex_meta_filename_pattern: "^[A-Z][A-Z0-9_]+_(meta_out|fg)\\.tsv\\.gz$"
 
 ldsc:
-  h2_z_threshold: 4.25       # starting threshold; raised adaptively if Frobenius > halt
+  # Trait selection BEFORE ldsc(): filter on the PUBLISHED h2-Z (Pan-UKB EUR for bothsex,
+  # Neale both_sexes for male/female) so the multivariate ldsc() stays within GenomicSEM's
+  # jackknife-block budget. GenomicSEM inflates n.blocks to ~k(k+1)/2 once n.traits>18, so
+  # >~43 traits gives tiny blocks and corrupted SEs. "computed" disables the pre-filter
+  # (only safe for <=~43 traits).
+  h2_z_source: published        # published | computed
+  published_h2_z_min: 4.0       # floor on the published h2-Z
+  max_jackknife_blocks: 1000    # GenomicSEM guardrail; caps k (1000 -> <=43 traits)
+  h2_z_threshold: 4.0      # post-ldsc gate on the run's OWN h2-Z; raised adaptively if Frobenius > halt
   h2_z_step: 0.5             # increment per adaptive retry
   h2_z_max: 10.0             # give up if threshold exceeds this
   liability_scale: true
   pop_prev_source: ukb_cohort
   min_factors_required: 2
+  # Split-sample structure validation: also run odd- and even-chromosome LDSC
+  # (GenomicSEM select="ODD"/"EVEN") -> ldsc_odd.rds / ldsc_even.rds. 03_efa discovers
+  # structure on odd; 04_cfa confirms it on the held-out even half. Adds ~2 LDSC runs.
+  chr_split: true
 
 efa:
   rotation: geomin
   loading_threshold: 0.30
   use_parallel_analysis: true
+  # Split-sample structure discovery (03_efa on the odd half). Factor number chosen by
+  # CONVERGENT criteria (scree/parallel/MAP/VSS) reported over this candidate range.
+  candidate_k: [3, 4, 5, 6]
+  # Broad general-factor membership: a trait joins the ARD general factor if its
+  # 1-factor loading (odd half) is >= this. Genetically-peripheral traits fall out.
+  general_loading_min: 0.30
+  # Domain (specific-factor) assignment: dominant loading >= this AND >= cross_load_ratio
+  # x the next-largest loading (no forced cross-loaders).
+  specific_loading_min: 0.40
+  cross_load_ratio: 1.30
 
 cfa:
   estimator: DWLS
   model_source: both
   min_indicators_per_factor: 1
   apriori_source: icd10_chapters
+  # Pinned bifactor specific-factor domains (from the documented split-sample analysis;
+  # 04_cfa confirms them on the held-out even half and locks model_spec.rds). The general
+  # ARD factor spans the EFA broad set; each domain is intersected with it.
+  domains:
+    Cardiometabolic: [E11, E66, E78, I20, I21, I25, R07, Z92, Z95]
+    UpperGI: [K21, K22, K29, K44]
+    Osteoarthritis: [M16, M17, Z96]
 
 comparison:
   mode: wald_test
@@ -136,6 +172,9 @@ gwas:
   genome_build: GRCh37
   study_id_prefix: ARD-GSEM
   snp_chunk_size: 50000
+  # SNP batch size for the chunked, resumable factor GWAS (run_userGWAS_chunked): each
+  # batch is checkpointed to gwas/chunks/ so a multi-day run survives interruption.
+  chunk_size: 25000
   # Marker-variable identification (first indicator loading fixed to 1) so the
   # GenomicSEM N_hat formula applies (Wiki 5: "this should not be set to TRUE if
   # the researcher plans to calculate the implied sample size of the factors").

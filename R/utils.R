@@ -157,6 +157,180 @@ harmonic_neff <- function(neffs) {
   length(neffs) / sum(1 / neffs)
 }
 
+# --- Trait summary + Neff filtering (munge) ---
+
+# Path of the case/control manifest for a sex (mirrors get_case_control()).
+.sex_manifest_path <- function(config, sex) {
+  if (identical(sex, "bothsex")) {
+    file.path(config$paths$manifest_dir, "panukb_bothsex_manifest.rda")
+  } else if (identical(sex, "bothsex_meta")) {
+    file.path(config$paths$manifest_dir, "bothsex_meta_manifest.rda")
+  } else {
+    file.path(config$paths$manifest_dir, sprintf("neale_%s_manifest.rda", sex))
+  }
+}
+
+# Best-effort enrichment of the Pan-UKB bothsex summary with the phenotype
+# description from the phenotype manifest CSV (its .rda has no description). Never fatal.
+.enrich_panukb_summary <- function(dt, config) {
+  csv <- config$panukb$phenotype_manifest
+  if (is.null(csv) || !nzchar(csv) || !file.exists(csv)) return(dt)
+  tryCatch({
+    m <- data.table::fread(csv, showProgress = FALSE)
+    m <- m[trait_type == "icd10" & pheno_sex == "both_sexes"]
+    i <- match(dt$trait, as.character(m$phenocode))
+    if ("description" %in% names(m)) dt[, description := as.character(m$description[i])]
+    dt
+  }, error = function(e) {
+    log_warn("munge", sprintf("Pan-UKB summary enrichment skipped: %s", conditionMessage(e)))
+    dt
+  })
+}
+
+# --- Jackknife block budget (mirrors GenomicSEM::ldsc n.blocks logic) ---
+
+# GenomicSEM sets n.blocks = ((k+1)(k+2)/2)+1 once n.traits>18 (else keeps 200).
+n_jackknife_blocks <- function(k) {
+  as.integer(ifelse(k > 18L, ((k + 1) * (k + 2)) / 2 + 1, 200L))
+}
+
+# Largest trait count k whose jackknife block count stays <= max_blocks.
+max_traits_for_blocks <- function(max_blocks) {
+  if (max_blocks < 200L) stop("max_traits_for_blocks: max_blocks must be >= 200")
+  k <- 18L
+  while (n_jackknife_blocks(k + 1L) <= max_blocks) k <- k + 1L
+  k
+}
+
+# --- Published h2-Z (per-source) ---
+
+# Returns data.table(trait, pub_h2_z, pub_h2_confidence) using the heritability
+# Z-score published by the trait's source: Pan-UKB EUR (sldsc_25bin_h2_z_EUR) for
+# bothsex; Neale round-2 topline (both_sexes rows; ICD10 has no sex-specific h2) for
+# male/female. Sexes with no published source (e.g. bothsex_meta) get all-NA.
+published_h2z <- function(config, sex, traits) {
+  na_out <- function() data.table::data.table(
+    trait = traits, pub_h2_z = NA_real_, pub_h2_confidence = NA_character_)
+
+  if (identical(sex, "bothsex")) {
+    csv <- config$panukb$phenotype_manifest
+    if (is.null(csv) || !nzchar(csv) || !file.exists(csv)) {
+      log_warn("ldsc", sprintf("Pan-UKB phenotype manifest not found (%s); published h2-Z unavailable",
+                               as.character(csv)))
+      return(na_out())
+    }
+    m <- data.table::fread(csv, showProgress = FALSE)
+    m <- m[trait_type == "icd10" & pheno_sex == "both_sexes"]
+    i <- match(traits, as.character(m$phenocode))
+    return(data.table::data.table(
+      trait = traits,
+      pub_h2_z = suppressWarnings(as.numeric(m$sldsc_25bin_h2_z_EUR[i])),
+      pub_h2_confidence = if ("phenotype_qc_EUR" %in% names(m))
+        as.character(m$phenotype_qc_EUR[i]) else NA_character_))
+  }
+
+  if (sex %in% c("male", "female")) {
+    path <- config$paths$neale_h2_topline
+    if (is.null(path) || !nzchar(path) || !file.exists(path)) {
+      log_fatal("ldsc", sprintf(
+        "Neale h2 topline not found: %s (needed for published h2-Z filtering of %s). Download ukb31063_h2_topline.02Oct2019.tsv.gz into manifest/.",
+        as.character(path), sex))
+    }
+    h <- data.table::fread(cmd = paste("zcat", shQuote(path)), showProgress = FALSE)
+    h <- h[h$sex == "both_sexes"]   # ICD10 h2 is both_sexes only; explicit $ avoids param/col clash
+    i <- match(traits, as.character(h$phenotype))
+    return(data.table::data.table(
+      trait = traits,
+      pub_h2_z = suppressWarnings(as.numeric(h$h2_z[i])),
+      pub_h2_confidence = as.character(h$confidence[i])))
+  }
+
+  na_out()
+}
+
+# Build the per-sex trait summary table (one row per discovered trait) with its
+# basic attributes + an `included` flag driven by config$munge$neff_min. Counts
+# come from the sex's case/control manifest, so this works pre-munge for the
+# manifest-count sources (panukb / neale). Not used for bothsex_meta, whose Neff
+# is a per-SNP quantity known only after reading each file.
+munge_trait_summary <- function(config, sex, traits) {
+  env <- new.env()
+  load(.sex_manifest_path(config, sex), envir = env)
+  man <- data.table::as.data.table(get(ls(env)[1L], envir = env))
+  idx <- match(traits, as.character(man$phenotype))
+
+  nc <- suppressWarnings(as.numeric(man$n_cases[idx]))
+  nk <- suppressWarnings(as.numeric(man$n_controls[idx]))
+  desc <- if ("description" %in% names(man)) as.character(man$description[idx]) else NA_character_
+  data_source <- switch(sex, bothsex = "panukb_EUR", male = "neale_male",
+                        female = "neale_female", bothsex_meta = "finngen_ukbb_meta", sex)
+
+  dt <- data.table::data.table(
+    trait = traits, description = desc,
+    n_cases = nc, n_controls = nk, n_eff = compute_neff(nc, nk),
+    data_source = data_source)
+  if (identical(sex, "bothsex")) dt <- .enrich_panukb_summary(dt, config)
+
+  # Published h2-Z (Pan-UKB EUR / Neale both_sexes) for reference in the table.
+  pub <- tryCatch(published_h2z(config, sex, traits),
+                  error = function(e) data.table::data.table(
+                    trait = traits, pub_h2_z = NA_real_, pub_h2_confidence = NA_character_))
+  dt[, pub_h2_z := pub$pub_h2_z[match(trait, pub$trait)]]
+  dt[, pub_h2_confidence := pub$pub_h2_confidence[match(trait, pub$trait)]]
+
+  neff_min  <- config$munge$neff_min %||% 0
+  h2_source <- config$ldsc$h2_z_source %||% "published"
+  z_min     <- config$ldsc$published_h2_z_min %||% 4.0
+  use_pub   <- identical(h2_source, "published")
+  matched   <- !is.na(idx)
+  neff_ok   <- matched & !is.na(dt$n_eff) & dt$n_eff >= neff_min
+  # When selecting on published h2-Z, also drop sub-threshold traits HERE so we don't
+  # munge traits that ldsc would discard (munging Pan-UKB/Neale files is slow). ldsc
+  # re-applies the floor + block-budget cap on the survivors.
+  pub_ok    <- if (use_pub) (!is.na(dt$pub_h2_z) & dt$pub_h2_z >= z_min) else TRUE
+  dt[, included := neff_ok & pub_ok]
+  dt[, exclude_reason := data.table::fcase(
+        !matched, "not_in_manifest",
+        is.na(n_eff), "neff_NA",
+        n_eff < neff_min, sprintf("neff<%.0f", neff_min),
+        use_pub & is.na(pub_h2_z), "pub_z_NA",
+        use_pub & !is.na(pub_h2_z) & pub_h2_z < z_min, sprintf("pub_z<%.2f", z_min),
+        default = NA_character_)]
+  dt[]
+}
+
+# Write a trait summary table to output/<sex>/munge/traits_summary.csv and log.
+write_trait_summary <- function(config, sex, summary_dt) {
+  out_dir <- file.path(config$paths$output_dir, sex, "munge")
+  dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
+  path <- file.path(out_dir, "traits_summary.csv")
+  data.table::fwrite(summary_dt, path)
+  log_info("munge", sprintf("Trait summary: %d/%d traits included (Neff>=%.0f) -> %s",
+                            sum(summary_dt$included, na.rm = TRUE), nrow(summary_dt),
+                            config$munge$neff_min %||% 0, path))
+  path
+}
+
+# Remove munged outputs (.sumstats.gz + pre_munge.tsv) for excluded traits, so ldsc --
+# which discovers traits from the munge dir -- doesn't pick up stale files left by an
+# earlier, unfiltered run. Only touches this stage's own output directory.
+remove_stale_munged <- function(config, sex, excluded_traits) {
+  if (length(excluded_traits) == 0L) return(invisible(0L))
+  out_dir <- file.path(config$paths$output_dir, sex, "munge")
+  removed <- 0L
+  for (tr in excluded_traits) {
+    for (f in c(file.path(out_dir, sprintf("%s_%s.sumstats.gz", sex, tr)),
+                file.path(out_dir, sprintf("%s_%s_pre_munge.tsv", sex, tr)))) {
+      if (file.exists(f)) { file.remove(f); removed <- removed + 1L }
+    }
+  }
+  if (removed > 0L) {
+    log_info("munge", sprintf("Removed %d stale munged file(s) for %d Neff-excluded trait(s)",
+                              removed, length(excluded_traits)))
+  }
+  invisible(removed)
+}
+
 vech_diag_index <- function(k) {
   if (k < 1L) stop("vech_diag_index: k must be >= 1")
   if (k == 1L) return(1L)
@@ -674,10 +848,23 @@ build_apriori_model <- function(traits, categories, min_indicators = 2,
   }
 
   if (isTRUE(add_heywood_constraints)) {
-    all_codes <- unique(unlist(by_factor, use.names = FALSE))
-    rv_lines <- sprintf("%s ~~ rv_%s*%s", all_codes, all_codes, all_codes)
-    cn_lines <- sprintf("rv_%s > 0.001", all_codes)
-    parts <- c(parts, rv_lines, cn_lines)
+    lens <- vapply(by_factor, length, integer(1))
+    multi_codes  <- unique(unlist(by_factor[lens >= 2L], use.names = FALSE))
+    single_codes <- unique(unlist(by_factor[lens == 1L], use.names = FALSE))
+    if (length(multi_codes) > 0L) {
+      rv_lines <- sprintf("%s ~~ rv_%s*%s", multi_codes, multi_codes, multi_codes)
+      cn_lines <- sprintf("rv_%s > 0.001", multi_codes)
+      parts <- c(parts, rv_lines, cn_lines)
+    }
+    # A single-indicator factor (loading fixed to 1 under marker-variable
+    # identification) is under-identified with a free residual variance: one
+    # observed variance cannot be split between factor and residual. Fixing the
+    # residual to 0 makes the factor equal to its indicator and identifies the
+    # model; leaving it free makes userGWAS's sandwich information matrix singular
+    # (Lapack dgesv "exactly singular"). See launch_20260703 post-mortem.
+    if (length(single_codes) > 0L) {
+      parts <- c(parts, sprintf("%s ~~ 0*%s", single_codes, single_codes))
+    }
   }
 
   paste(parts, collapse = "\n")
@@ -944,4 +1131,121 @@ get_case_control <- function(config, sex, trait) {
     out$manifest_row <- as.list(row[1, , drop = FALSE])
   }
   out
+}
+
+# ============================================================================
+# Split-sample / bifactor helpers (defensible ARD GSEM; see docs/ plan).
+# ============================================================================
+
+# Within-factor mean genetic correlation -- a coherence metric. `rg` is a named
+# genetic-correlation matrix; `traits` the factor's indicators. A real factor sits
+# well above the global off-diagonal mean; a grab-bag sits near it.
+factor_coherence <- function(rg, traits) {
+  s <- rg[traits, traits, drop = FALSE]
+  v <- s[upper.tri(s)]
+  list(mean = mean(v), min = min(v), max = max(v))
+}
+
+# Bifactor lavaan model: one general factor over all `general_traits`, plus
+# orthogonal specific factors (`domains` = named list of indicator vectors). With
+# std.lv=TRUE each latent variance is fixed to 1. `heywood` bounds indicator
+# residuals >0.001 (see 03_interpretation Heywood note). If add_snp, appends
+# `<factor> ~ SNP` for every factor (general + specifics) for userGWAS.
+build_bifactor_model <- function(general_traits, domains, general_name = "ARD",
+                                 add_snp = FALSE, heywood = TRUE) {
+  sn <- names(domains)
+  parts <- c(paste0(general_name, " =~ ", paste(general_traits, collapse = " + ")),
+             vapply(seq_along(domains), function(i)
+               paste0(sn[i], " =~ ", paste(domains[[i]], collapse = " + ")), character(1)),
+             vapply(sn, function(s) sprintf("%s ~~ 0*%s", general_name, s), character(1)))
+  if (length(sn) >= 2L)
+    parts <- c(parts, apply(combn(sn, 2L), 2, function(p) sprintf("%s ~~ 0*%s", p[1], p[2])))
+  if (isTRUE(heywood))
+    parts <- c(parts, sprintf("%s ~~ rvv_%s*%s", general_traits, general_traits, general_traits),
+               sprintf("rvv_%s > 0.001", general_traits))
+  if (isTRUE(add_snp))
+    parts <- c(parts, paste0(c(general_name, sn), " ~ SNP"))
+  paste(parts, collapse = "\n")
+}
+
+# Hierarchical (second-order) model: first-order `domains` + a second-order factor
+# over them. Used as a bake-off comparator.
+build_hierarchical_model <- function(domains, general_name = "ARD", heywood = TRUE) {
+  fn <- names(domains); ind <- unlist(domains, use.names = FALSE)
+  parts <- c(vapply(seq_along(domains), function(i)
+               paste0(fn[i], " =~ ", paste(domains[[i]], collapse = " + ")), character(1)),
+             paste0(general_name, " =~ ", paste(fn, collapse = " + ")))
+  if (isTRUE(heywood))
+    parts <- c(parts, sprintf("%s ~~ rvv_%s*%s", ind, ind, ind), sprintf("rvv_%s > 0.001", ind))
+  paste(parts, collapse = "\n")
+}
+
+# Subset a GenomicSEM covstruc (ldsc output) to a trait subset. Keeps S/I/*_Stand
+# on [idx,idx] and V/V_Stand on the corresponding column-major vech indices; N on
+# those vech columns. Traits are kept in their original covstruc order so the vech
+# slice stays consistent (colnames(out$S) gives the canonical order for subset_snps).
+subset_covstruc <- function(covstruc, keep) {
+  traits <- colnames(covstruc$S)
+  miss <- setdiff(keep, traits)
+  if (length(miss)) stop("subset_covstruc: traits not in covstruc: ", paste(miss, collapse = ","))
+  idx <- which(traits %in% keep)                      # original order
+  k <- length(traits)
+  low <- which(lower.tri(matrix(0, k, k), diag = TRUE), arr.ind = TRUE)  # column-major vech
+  kv <- which(low[, 1] %in% idx & low[, 2] %in% idx)
+  out <- covstruc
+  out$S <- covstruc$S[idx, idx, drop = FALSE]
+  out$V <- covstruc$V[kv, kv, drop = FALSE]
+  if (!is.null(covstruc$I))       out$I <- covstruc$I[idx, idx, drop = FALSE]
+  if (!is.null(covstruc$S_Stand)) out$S_Stand <- covstruc$S_Stand[idx, idx, drop = FALSE]
+  if (!is.null(covstruc$V_Stand)) out$V_Stand <- covstruc$V_Stand[kv, kv, drop = FALSE]
+  if (!is.null(covstruc$N))       out$N <- covstruc$N[, kv, drop = FALSE]
+  out
+}
+
+# Subset a sumstats() SNP data frame to the given traits (in covstruc order):
+# keeps the 6 SNP-info columns + beta.<trait>/se.<trait> pairs. `keep` MUST be in
+# the covstruc trait order (i.e. colnames(subset_covstruc(...)$S)).
+subset_snps <- function(snps, keep) {
+  cols <- as.vector(rbind(paste0("beta.", keep), paste0("se.", keep)))
+  miss <- setdiff(cols, colnames(snps))
+  if (length(miss)) stop("subset_snps: columns missing: ", paste(miss, collapse = ","))
+  cbind(snps[, 1:6], snps[, cols, drop = FALSE])
+}
+
+# Chunked, resumable userGWAS. Splits SNPs into row-batches of `chunk_size`, runs
+# userGWAS per batch, atomically checkpoints each to <out_dir>/chunks/<prefix>_chunk_NNNNN.rds
+# (skipping ones already present), then rbinds per factor. Interrupt-safe: re-invoking
+# resumes from the first missing chunk. Results are identical to a single call because
+# GenomicSEM estimates every SNP independently given the (fixed) covstruc.
+run_userGWAS_chunked <- function(covstruc, SNPs, model, sub, chunk_size, out_dir, prefix,
+                                 cores, estimation = "DWLS", std.lv = TRUE,
+                                 fix_measurement = TRUE, GC = "standard", Q_SNP = TRUE,
+                                 smooth_check = TRUE) {
+  chunk_dir <- file.path(out_dir, "chunks")
+  dir.create(chunk_dir, recursive = TRUE, showWarnings = FALSE)
+  n <- nrow(SNPs); n_chunks <- as.integer(ceiling(n / chunk_size))
+  log_info("gwas", sprintf("Chunked userGWAS: %s SNPs in %d chunks of %d (cores=%d)",
+                           format(n, big.mark = ","), n_chunks, chunk_size, cores))
+  cf_of <- function(ci) file.path(chunk_dir, sprintf("%s_chunk_%05d.rds", prefix, ci))
+  for (ci in seq_len(n_chunks)) {
+    if (file.exists(cf_of(ci))) next
+    lo <- (ci - 1L) * chunk_size + 1L; hi <- min(ci * chunk_size, n)
+    t0 <- Sys.time()
+    res <- GenomicSEM::userGWAS(covstruc = covstruc, SNPs = SNPs[lo:hi, , drop = FALSE],
+      estimation = estimation, model = model, sub = sub, cores = cores, parallel = TRUE,
+      smooth_check = smooth_check, std.lv = std.lv, fix_measurement = fix_measurement,
+      GC = GC, Q_SNP = Q_SNP, printwarn = TRUE)
+    if (is.data.frame(res)) res <- list(res)
+    tmp <- paste0(cf_of(ci), ".tmp"); saveRDS(res, tmp); file.rename(tmp, cf_of(ci))
+    log_info("gwas", sprintf("  chunk %d/%d (%s SNPs) in %.1f min", ci, n_chunks,
+                             format(hi - lo + 1L, big.mark = ","),
+                             as.numeric(difftime(Sys.time(), t0, units = "mins"))))
+  }
+  factors <- trimws(sub("\\s*~.*$", "", sub))
+  assembled <- setNames(vector("list", length(sub)), factors)
+  for (ci in seq_len(n_chunks)) {
+    r <- readRDS(cf_of(ci))
+    for (j in seq_along(sub)) assembled[[j]] <- rbind(assembled[[j]], r[[j]])
+  }
+  assembled
 }

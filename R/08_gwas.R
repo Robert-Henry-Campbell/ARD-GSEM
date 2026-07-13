@@ -37,6 +37,14 @@ run_gwas <- function(config, sex) {
   }
   snp_sumstats <- readRDS(snp_path)
 
+  # Defensible bifactor path: if 04_cfa locked a split-sample model_spec.rds, run the
+  # chunked/checkpointed factor GWAS on that (ARD general + domain specifics). Otherwise
+  # fall through to the legacy ICD-chapter a-priori factor GWAS.
+  spec_path <- file.path(config$paths$output_dir, sex, "cfa", "model_spec.rds")
+  if (file.exists(spec_path)) {
+    return(run_gwas_bifactor(config, sex, ldsc_output, snp_sumstats, spec_path))
+  }
+
   h2_path <- file.path(config$paths$output_dir, sex, "ldsc", "h2_qc.csv")
   retained <- fread(h2_path)[pass == TRUE]$trait
 
@@ -100,7 +108,12 @@ run_gwas <- function(config, sex) {
     fix_measurement = fix_measurement,
     GC = gc_mode,
     Q_SNP = q_snp_flag,
-    printwarn = FALSE
+    # printwarn MUST be TRUE: with Q_SNP + smooth_check, GenomicSEM's per-SNP
+    # column names always include the error/warning columns, but those columns
+    # are only appended when printwarn=TRUE. printwarn=FALSE yields a column
+    # count 2 short of the name vector -> "'names' attribute [26] must be the
+    # same length as the vector [24]" and the whole run aborts.
+    printwarn = TRUE
   )
 
   elapsed <- as.numeric(difftime(Sys.time(), t0, units = "mins"))
@@ -131,4 +144,53 @@ run_gwas <- function(config, sex) {
   write_stage_manifest("gwas", sex, config, list.files(out_dir, full.names = TRUE))
 
   list(gwas_result = gwas_result, factors = spec$factors, model = spec$model)
+}
+
+# --- Bifactor factor GWAS (defensible ARD GSEM; chunked + resumable) -------------------
+# Uses the split-sample-locked model_spec.rds from 04_cfa: the ARD general factor +
+# domain specific factors. Subsets the full covstruc + SNP sumstats to the general-factor
+# indicator set, then runs run_userGWAS_chunked (per-SNP-batch checkpointing) with
+# Q_SNP=TRUE so pan-ARD SNPs (significant factor effect, non-significant Q_SNP) can be
+# separated from trait-specific ones downstream. std.lv=TRUE (unit-variance) -- the
+# marker-variable identification degenerates for this model; betas are per-SD-of-factor.
+run_gwas_bifactor <- function(config, sex, ldsc_output, snp_sumstats, spec_path) {
+  spec <- readRDS(spec_path)
+  log_info("gwas", sprintf("Bifactor factor GWAS: %d factor(s) [%s] over %d indicators",
+                           length(spec$factors), paste(spec$factors, collapse = ", "),
+                           length(spec$general_traits)))
+  cov_sub <- subset_covstruc(ldsc_output, spec$general_traits)
+  keep_ordered <- colnames(cov_sub$S)
+  snps_sub <- subset_snps(snp_sumstats, keep_ordered)
+  rm(snp_sumstats); gc()
+
+  cores <- as.integer(config$parallel$n_workers %||% 1L)
+  chunk_size <- as.integer(config$gwas$chunk_size %||% 25000L)
+  out_dir <- file.path(config$paths$output_dir, sex, "gwas")
+  dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
+  log_info("gwas", sprintf("userGWAS args: Q_SNP=%s fix_measurement=%s GC=%s smooth_check=%s std.lv=TRUE chunk_size=%d cores=%d",
+                           isTRUE(config$gwas$q_snp %||% TRUE), isTRUE(config$gwas$fix_measurement %||% TRUE),
+                           config$gwas$genomic_control %||% "standard", isTRUE(config$gwas$smooth_check),
+                           chunk_size, cores))
+  t0 <- Sys.time()
+  gwas_result <- run_userGWAS_chunked(
+    covstruc = cov_sub, SNPs = snps_sub, model = spec$gwas_model, sub = spec$sub,
+    chunk_size = chunk_size, out_dir = out_dir, prefix = sex, cores = cores,
+    estimation = config$cfa$estimator %||% "DWLS", std.lv = TRUE,
+    fix_measurement = isTRUE(config$gwas$fix_measurement %||% TRUE),
+    GC = config$gwas$genomic_control %||% "standard",
+    Q_SNP = isTRUE(config$gwas$q_snp %||% TRUE),
+    smooth_check = isTRUE(config$gwas$smooth_check))
+  names(gwas_result) <- spec$factors
+  log_info("gwas", sprintf("Chunked bifactor userGWAS complete in %.1f min",
+                           as.numeric(difftime(Sys.time(), t0, units = "mins"))))
+
+  saveRDS(gwas_result, file.path(out_dir, paste0(sex, "_userGWAS_raw.rds")))
+  saveRDS(spec, file.path(out_dir, paste0(sex, "_model_spec.rds")))
+  for (f in names(gwas_result)) {
+    g <- gwas_result[[f]]
+    log_info("gwas", sprintf("  factor %s: %s SNPs", f,
+                             format(if (is.data.frame(g)) nrow(g) else NA_integer_, big.mark = ",")))
+  }
+  write_stage_manifest("gwas", sex, config, list.files(out_dir, full.names = TRUE))
+  list(gwas_result = gwas_result, factors = spec$factors, model = spec$gwas_model)
 }
