@@ -415,7 +415,7 @@ prs:
   ct_kb: 250
   ct_thresholds: [5.0e-8, 1.0e-6, 1.0e-4, 1.0e-3, 0.01, 0.05, 0.1, 0.2, 0.5, 1]
   ldpred2_chains: 30
-  sbayesrc_threads: 16
+  sbayesrc_threads: 8        # was 16; lowered 2026-11-16 while the shared server is oversubscribed
   seed: 20261108
   workers: 22
   # comparator scores built from external summary statistics with the same methods
@@ -493,6 +493,6 @@ prs_eval:
   finngen: {run: true, endpoints: manifest/indicator_finngen_endpoints.tsv}
   min_events: 20
   seed: 20261108
-  plink_threads: 8
+  plink_threads: 2           # was 8; x score_parallel_chr 4 = 8 threads (lowered 2026-11-16)
   plink_memory_mb: 32000
   score_parallel_chr: 4

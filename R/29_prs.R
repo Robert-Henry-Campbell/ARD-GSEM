@@ -30,6 +30,18 @@ prs_ct <- function(config, d, f, dir, cfg, n) {
   w
 }
 
+# PRS-CS prints "... Done ..." only after writing a chromosome's posterior effects, and run_tool
+# overwrites the chromosome's log on every run, so a log whose last line is "... Done ..." marks a
+# complete output file (resume after a kill; --seed is fixed, so a rerun would give the same weights).
+prscs_chr_done <- function(outp, c) {
+  lg <- paste0(outp, "_chr", c, ".log")
+  eff <- list.files(dirname(outp), pattern = paste0("^", basename(outp), "_pst_eff_.*_chr", c, "\\.txt$"))
+  if (length(eff) != 1L || !file.exists(lg)) return(FALSE)
+  l <- trimws(readLines(lg, warn = FALSE))
+  l <- l[nzchar(l)]
+  length(l) > 0L && l[length(l)] == "... Done ..."
+}
+
 prs_prscs <- function(config, d, f, dir, cfg, n) {
   py <- tool_path(config, "py")
   prscs <- tool_path(config, "prscs")
@@ -37,7 +49,11 @@ prs_prscs <- function(config, d, f, dir, cfg, n) {
   fwrite(d[, .(SNP, A1, A2, BETA = beta, SE)], sst, sep = "\t")
   outp <- file.path(dir, paste0(f, "_prscs"))
   env <- c("MKL_NUM_THREADS=1", "NUMEXPR_NUM_THREADS=1", "OMP_NUM_THREADS=1")
-  r <- parallel::mclapply(1:22, function(c) tryCatch(run_tool(py, c(prscs, paste0("--ref_dir=", config$refs$prscs_ref),
+  todo <- Filter(function(c) !prscs_chr_done(outp, c), 1:22)
+  if (length(todo) < 22L)
+    log_info("prs", sprintf("%s/prscs: %d of 22 chromosomes already done; running: %s", f, 22L - length(todo),
+                            if (length(todo)) paste(todo, collapse = ",") else "none"))
+  r <- parallel::mclapply(todo, function(c) tryCatch(run_tool(py, c(prscs, paste0("--ref_dir=", config$refs$prscs_ref),
       paste0("--bim_prefix=", config$refs$ld_1000g_bfile), paste0("--sst_file=", sst), paste0("--n_gwas=", round(n)),
       paste0("--out_dir=", outp), paste0("--chrom=", c), paste0("--seed=", cfg$seed %||% 20261108)),
       "prs", paste0(outp, "_chr", c, ".log"), env = env), error = function(e) e),
@@ -45,6 +61,7 @@ prs_prscs <- function(config, d, f, dir, cfg, n) {
   bad <- vapply(r, inherits, logical(1), "error")
   if (any(bad)) stop("PRS-CS failed on ", sum(bad), " chromosome(s): ", conditionMessage(r[bad][[1]]))
   files <- list.files(dirname(outp), pattern = paste0("^", basename(outp), "_pst_eff_.*_chr[0-9]+\\.txt$"), full.names = TRUE)
+  if (length(files) != 22L) stop(sprintf("PRS-CS: expected 22 chromosome outputs for %s, found %d", f, length(files)))
   w <- rbindlist(lapply(files, fread, header = FALSE, col.names = c("CHR", "SNP", "BP", "A1", "A2", "weight")))
   w[, .(SNP, A1, A2, weight)]
 }
@@ -93,8 +110,13 @@ prs_sbayesrc <- function(config, d, f, dir, cfg, n) {
                           "SBayesRC::sbayesrc(mafile='%s_imp.ma', LDdir='%s', outPrefix='%s', annot='%s', log2file=TRUE)"),
                    ma, config$refs$sbayesrc_ld, pre, pre, config$refs$sbayesrc_ld, pre, pre, config$refs$sbayesrc_ld,
                    pre, config$refs$sbayesrc_annot)
-  run_tool("apptainer", c("exec", "-B", "/mnt/sdg", sif, "Rscript", "--vanilla", "-e", shQuote(rcode)), "prs",
-           paste0(pre, ".stdout.log"), expect = paste0(pre, ".txt"), env = paste0("OMP_NUM_THREADS=", thr))
+  # --cleanenv: the pipeline's renv sets R_LIBS_USER to the host R 4.4 library, which apptainer would pass
+  # into the container's R 4.3, whose data.table then fails to load ("object 'sort_by' not found").
+  # SBayesRC takes its thread count from OMP_NUM_THREADS, so that and TMPDIR are passed explicitly.
+  cenv <- c("--env", paste0("OMP_NUM_THREADS=", thr))
+  if (nzchar(Sys.getenv("TMPDIR"))) cenv <- c(cenv, "--env", paste0("TMPDIR=", Sys.getenv("TMPDIR")))
+  run_tool("apptainer", c("exec", "--cleanenv", cenv, "-B", "/mnt/sdg", sif, "Rscript", "--vanilla", "-e", shQuote(rcode)),
+           "prs", paste0(pre, ".stdout.log"), expect = paste0(pre, ".txt"), env = paste0("OMP_NUM_THREADS=", thr))
   # tidy() aligns alleles to the LD reference and impute() adds SNPs absent from the GWAS, so A2
   # comes from the reference's snp.info (A1 is the effect allele of BETA)
   w <- fread(paste0(pre, ".txt"))
