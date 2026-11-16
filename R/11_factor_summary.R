@@ -28,8 +28,58 @@ top_snps_table <- function(g, factor_name, n_top = 20L) {
   d[, ..cols]
 }
 
+# Post-GWAS (bifactor) summary: one row per factor from the qc_filters, loci, factor_ldsc
+# and mr_export outputs, plus top SNPs of the full and qfilter tiers with their flags.
+run_factor_summary_postgwas <- function(config, sex, n_top = 20L) {
+  stage <- "factor_summary"
+  out_dir <- stage_dir(config, sex, stage)
+  dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
+  read_opt <- function(st, file) {
+    p <- file.path(stage_dir(config, sex, st), file)
+    if (file.exists(p)) fread(p) else NULL
+  }
+  s <- read_opt("qc_filters", "qc_summary.csv")
+  if (is.null(s)) log_fatal(stage, "qc_filters/qc_summary.csv missing (run qc_filters)")
+  calib <- read_opt("qc_filters", "qsnp_calibration.csv")
+  if (!is.null(calib)) s <- merge(s, calib[, .(factor, df_eff, lambda_Q_gsem, lambda_Q_eff)], by = "factor", all.x = TRUE)
+  loci <- read_opt("loci", "loci_summary.csv")
+  if (!is.null(loci)) s <- merge(s, loci[, !"n_gws"], by = "factor", all.x = TRUE)
+  ld <- read_opt("factor_ldsc", "summary.csv")
+  if (!is.null(ld)) {
+    w <- dcast(ld[tier %in% c("qfilter", "qsnp")], factor ~ tier,
+               value.var = c("intercept", "intercept_se", "h2", "h2_se", "mean_chisq"))
+    s <- merge(s, w, by = "factor", all.x = TRUE)
+  }
+  mr <- read_opt("mr_export", "mr_export_summary.csv")
+  if (!is.null(mr)) s <- merge(s, mr[, .(factor, n_instruments)], by = "factor", all.x = TRUE)
+  excl <- config$postgwas$excluded_factors %||% list()
+  if (length(excl)) {
+    s <- rbind(s, data.table(factor = names(excl), note = unlist(excl)), fill = TRUE)
+  }
+  s[, sex := sex]
+  fwrite(s, file.path(out_dir, paste0(sex, "_factor_summary.csv")))
+
+  top <- rbindlist(lapply(postgwas_factors(config), function(f) {
+    d <- load_postgwas(config, sex, f, "full",
+                       cols = c("SNP", "CHR", "BP", "A1", "A2", "EAF_A1", "beta", "SE", "P", "LOG10P",
+                                "Q_SNP_pval", "qsnp_hit", "qsnp_ld", "pass_qfilter", "is_mhc"))
+    rbind(d[order(-LOG10P)][seq_len(min(.N, n_top))][, tier := "full"],
+          d[pass_qfilter == TRUE][order(-LOG10P)][seq_len(min(.N, n_top))][, tier := "qfilter"])[, factor := f]
+  }))
+  setcolorder(top, c("factor", "tier"))
+  fwrite(top, file.path(out_dir, paste0(sex, "_top_snps.csv")))
+  clear_postgwas_cache()
+  log_info(stage, sprintf("Wrote %s_factor_summary.csv and %s_top_snps.csv", sex, sex))
+  write_stage_manifest(stage, sex, config, list.files(out_dir, full.names = TRUE))
+  list(summary = s, top_snps = top)
+}
+
 run_factor_summary <- function(config, sex, sig_threshold = 5e-8, n_top = 20L) {
   log_info("factor_summary", sprintf("=== Factor summary stage: %s ===", sex))
+  if (exists("factor_registry_path", mode = "function") &&
+      file.exists(factor_registry_path(config, sex))) {
+    return(run_factor_summary_postgwas(config, sex, n_top))
+  }
 
   gwas_path <- file.path(config$paths$output_dir, sex, "gwas",
                          paste0(sex, "_userGWAS_raw.rds"))

@@ -1,6 +1,20 @@
 run_split_vcf <- function(config, sex) {
   log_info("split_vcf", sprintf("=== Split VCF stage: %s ===", sex))
 
+  # Post-GWAS path: the vcf stage already writes one single-sample VCF per factor
+  if (exists("factor_registry_path", mode = "function") &&
+      file.exists(factor_registry_path(config, sex))) {
+    base <- file.path(stage_dir(config, sex, "vcf"), config$vcf$basename %||% paste0(sex, "_bifactor_gsem"))
+    per_factor <- sprintf("%s_%s.vcf.gz", base, postgwas_factors(config))
+    missing <- per_factor[!file.exists(per_factor) | !file.exists(paste0(per_factor, ".tbi"))]
+    if (length(missing)) log_fatal("split_vcf", sprintf("per-factor VCF(s) missing (run the vcf stage): %s",
+                                                        paste(basename(missing), collapse = ", ")))
+    log_info("split_vcf", sprintf("per-factor VCFs written by the vcf stage: %s",
+                                  paste(basename(per_factor), collapse = ", ")))
+    write_stage_manifest("split_vcf", sex, config, per_factor)
+    return(invisible(per_factor))
+  }
+
   in_vcf <- file.path(config$paths$output_dir, sex, "gwas",
                       sprintf("%s_chapter_gsem.vcf.gz", sex))
   if (!file.exists(in_vcf)) {

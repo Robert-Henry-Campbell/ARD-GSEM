@@ -32,7 +32,12 @@ parse_args <- function(args) {
       cat("              e.g. --sex male,female  or  --sex bothsex  or  --sex bothsex_meta\n")
       cat("              (bothsex_meta = FinnGen+UKBB EUR-only meta-analysis; liftover GRCh38->GRCh37)\n")
       cat("  --stage     all|<name>[,<name>...]  e.g. 'gwas,vcf,plots' (default: all)\n")
-      cat("              names: munge|ldsc|efa|cfa|sumstats|gwas|vcf|factor_ldsc|qc_filters|split_vcf|factor_summary|plots|comparison|report\n")
+      cat("              names: munge|ldsc|efa|cfa|sumstats|gwas|qc_filters|vcf|split_vcf|factor_ldsc|\n")
+      cat("                     loci|annotate|mr_export|ld_panel|finemap|cojo|qtl_lookup|coloc|\n")
+      cat("                     magma|sldsc|twas|scdrs|gene_priority|prs|prs_eval|postgwas_plots|figures|\n")
+      cat("                     factor_summary|comparison|plots|report\n")
+      cat("              Post-GWAS stages: run them by name (e.g. 'qc_filters,vcf,factor_ldsc'),\n")
+      cat("              not '--stage all --resume', whose upstream hashes include the paths block.\n")
       cat("  --threads   N                 (default: 24)\n")
       cat("  --config    path to YAML config (default: config/pipeline.yaml)\n")
       cat("  --resume    Skip stages with valid output manifests\n")
@@ -108,6 +113,30 @@ source("R/11_factor_summary.R")
 source("R/12_factor_ldsc.R")
 source("R/13_qc_filters.R")
 source("R/14_split_vcf.R")
+source("R/15_postgwas_common.R")
+source("R/16_loci.R")
+source("R/17_mr_export.R")
+source("R/18_annotate.R")
+source("R/19_ld_panel.R")
+source("R/20_finemap.R")
+source("R/21_cojo.R")
+source("R/22_qtl_lookup.R")
+source("R/23_coloc.R")
+source("R/24_gene_priority.R")
+source("R/25_magma.R")
+source("R/26_sldsc.R")
+source("R/27_twas.R")
+source("R/28_scdrs.R")
+source("R/29_prs_external.R")
+source("R/29_prs.R")
+source("R/30_postgwas_plots.R")
+source("R/31_prs_eval_pheno.R")
+source("R/31_prs_eval_stats.R")
+source("R/31_prs_eval_finngen.R")
+source("R/31_prs_eval.R")
+source("R/32_figures.R")
+source("R/32_figures_panels.R")
+source("R/32_figures_panels_prs.R")
 
 sexes <- parse_sexes(opts$sex)
 both_strat <- all(c("male", "female") %in% sexes)
@@ -115,10 +144,12 @@ both_strat <- all(c("male", "female") %in% sexes)
 config <- read_config(opts$config, root = project_root)
 config <- setup_pipeline(config, sex = sexes, threads = opts$threads)
 
-all_stages <- c("munge", "ldsc", "efa", "cfa", "sumstats", "gwas", "vcf",
-                "factor_ldsc", "qc_filters", "split_vcf",
-                "factor_summary", "comparison", "plots", "report")
-stages <- if (opts$stage == "all") all_stages else strsplit(opts$stage, ",", fixed = TRUE)[[1L]]
+all_stages <- c("munge", "ldsc", "efa", "cfa", "sumstats", "gwas", "qc_filters", "vcf",
+                "split_vcf", "factor_ldsc", "loci", "annotate", "mr_export", "ld_panel", "finemap",
+                "cojo", "qtl_lookup", "coloc", "magma", "sldsc", "twas", "scdrs", "gene_priority", "prs",
+                "prs_eval", "postgwas_plots", "figures", "factor_summary",
+                "comparison", "plots", "report")
+stages <- if (opts$stage == "all") all_stages else trimws(strsplit(opts$stage, ",", fixed = TRUE)[[1L]])
 unknown <- setdiff(stages, all_stages)
 if (length(unknown) > 0L) stop(sprintf("Unknown --stage value(s): %s", paste(unknown, collapse = ", ")))
 
@@ -137,13 +168,10 @@ should_skip <- function(stage_name, sex_val) {
                        bothsex_meta = "bothsex_meta",
                        NULL)
   source_cfg <- if (is.null(source_key)) NULL else config[[source_key]]
-  # Current hash: stage block + paths + source-specific block. A change to
-  # config$bothsex_meta$het_p_min (etc.) will correctly invalidate the manifest.
-  current_hash <- digest::digest(
-    list(stage = config[[stage_name]] %||% list(),
-         paths = config$paths,
-         source = source_cfg),
-    algo = "sha256")
+  # Current hash: stage block + paths + source-specific block (+ the shared postgwas /
+  # refs / tools blocks for post-GWAS stages). A change to config$bothsex_meta$het_p_min
+  # (etc.) will correctly invalidate the manifest.
+  current_hash <- digest::digest(stage_hash_payload(stage_name, sex_val, config), algo = "sha256")
   # Compat hash: pre-source-keyed scheme (stage + paths). Manifests written
   # under the older scheme still validate so existing male/female/bothsex runs
   # don't get re-executed the first time after this code lands.
@@ -216,9 +244,21 @@ tryCatch({
     }
   }
 
+  if (should_run("qc_filters")) {
+    for (sex in sexes) {
+      if (!should_skip("qc_filters", sex)) run_qc_filters(config, sex)
+    }
+  }
+
   if (should_run("vcf")) {
     for (sex in sexes) {
       if (!should_skip("vcf", sex)) run_write_vcf(config, sex)
+    }
+  }
+
+  if (should_run("split_vcf")) {
+    for (sex in sexes) {
+      if (!should_skip("split_vcf", sex)) run_split_vcf(config, sex)
     }
   }
 
@@ -228,15 +268,30 @@ tryCatch({
     }
   }
 
-  if (should_run("qc_filters")) {
+  if (should_run("loci")) {
     for (sex in sexes) {
-      if (!should_skip("qc_filters", sex)) run_qc_filters(config, sex)
+      if (!should_skip("loci", sex)) run_loci(config, sex)
     }
   }
 
-  if (should_run("split_vcf")) {
+  if (should_run("annotate")) {
     for (sex in sexes) {
-      if (!should_skip("split_vcf", sex)) run_split_vcf(config, sex)
+      if (!should_skip("annotate", sex)) run_annotate(config, sex)
+    }
+  }
+
+  if (should_run("mr_export")) {
+    for (sex in sexes) {
+      if (!should_skip("mr_export", sex)) run_mr_export(config, sex)
+    }
+  }
+
+  for (st in c("ld_panel", "finemap", "cojo", "qtl_lookup", "coloc", "magma", "sldsc", "twas", "scdrs",
+               "gene_priority", "prs", "prs_eval", "postgwas_plots", "figures")) {
+    if (should_run(st)) {
+      for (sex in sexes) {
+        if (!should_skip(st, sex)) get(paste0("run_", st))(config, sex)
+      }
     }
   }
 

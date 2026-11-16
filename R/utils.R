@@ -114,9 +114,15 @@ read_config <- function(path = "config/pipeline.yaml", root = NULL) {
     effective_root <- normalizePath(dirname(dirname(path)),
                                     winslash = "/", mustWork = TRUE)
   }
-  for (nm in names(cfg$paths)) {
-    p <- cfg$paths[[nm]]
-    if (!is_absolute_path(p)) cfg$paths[[nm]] <- file.path(effective_root, p)
+  # `refs` and `tools` (post-GWAS reference files and binaries) are absolutised like
+  # `paths`, but live in their own blocks: every stage's resume hash includes `paths`,
+  # so adding keys there would invalidate the finished upstream stages.
+  for (blk in c("paths", "refs", "tools")) {
+    for (nm in names(cfg[[blk]])) {
+      p <- cfg[[blk]][[nm]]
+      if (is.character(p) && length(p) == 1L && nzchar(p) && !is_absolute_path(p))
+        cfg[[blk]][[nm]] <- file.path(effective_root, p)
+    }
   }
   cfg$project$root <- effective_root
   cfg
@@ -1004,25 +1010,39 @@ compute_loading_diff <- function(male_loading, male_se, female_loading, female_s
 
 # --- Stage Manifests ---
 
-write_stage_manifest <- function(stage, sex, config, output_files, warnings = character(0)) {
-  # Hash includes source-specific config (panukb / bothsex_meta) so editing the
-  # source block correctly invalidates --resume on the next run. should_skip()
-  # in run_pipeline.R falls back to compat / legacy hashes for older manifests.
+# Stages added for post-GWAS work. Their resume hash also covers the shared `postgwas`,
+# `refs` and `tools` blocks; the upstream stages' hashes are unchanged.
+POSTGWAS_STAGES <- c("qc_filters", "vcf", "split_vcf", "factor_ldsc", "factor_summary",
+                     "loci", "annotate", "mr_export", "ld_panel", "finemap", "cojo",
+                     "qtl_lookup", "coloc", "magma", "sldsc", "twas", "scdrs", "prs",
+                     "gene_priority", "postgwas_plots", "prs_eval", "figures")
+
+# The object whose digest is a stage's config_hash. Hash source-specific config
+# (panukb / bothsex_meta) so editing the source block correctly invalidates --resume.
+# should_skip() in run_pipeline.R falls back to compat / legacy hashes for older manifests.
+stage_hash_payload <- function(stage, sex, config) {
   source_key <- switch(sex,
                        bothsex      = "panukb",
                        bothsex_meta = "bothsex_meta",
                        NULL)
-  source_cfg <- if (is.null(source_key)) NULL else config[[source_key]]
+  payload <- list(stage = config[[stage]] %||% list(),
+                  paths = config$paths,
+                  source = if (is.null(source_key)) NULL else config[[source_key]])
+  if (stage %in% POSTGWAS_STAGES) {
+    payload$postgwas <- config$postgwas
+    payload$refs <- config$refs
+    payload$tools <- config$tools
+  }
+  payload
+}
+
+write_stage_manifest <- function(stage, sex, config, output_files, warnings = character(0)) {
   manifest <- list(
     stage = stage,
     sex = sex,
     completed_at = format(Sys.time(), "%Y-%m-%dT%H:%M:%S"),
     run_id = .log_env$run_id %||% "unknown",
-    config_hash = digest::digest(
-      list(stage = config[[stage]] %||% list(),
-           paths = config$paths,
-           source = source_cfg),
-      algo = "sha256"),
+    config_hash = digest::digest(stage_hash_payload(stage, sex, config), algo = "sha256"),
     output_files = basename(output_files),
     traits_processed = length(output_files),
     warnings = warnings

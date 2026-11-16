@@ -1,0 +1,35 @@
+icd10	gbd_cause	gbd_level	cause_id	whole_code	note
+D12	Other neoplasms	3	965	TRUE	""
+E03	Endocrine, metabolic, blood, and immune disorders	3	619	TRUE	other candidates: Adverse effects of medical treatment
+E11	Diabetes mellitus	3	587	FALSE	manual: the map also lists Chronic kidney disease via E11.2; diabetes chosen
+E66	Endocrine, metabolic, blood, and immune disorders	3	619	FALSE	manual: also under Adverse effects of medical treatment via E66.1; endocrine chosen
+E78	Endocrine, metabolic, blood, and immune disorders	3	619	FALSE	""
+G47	G47				no level-3 GBD cause covers this code; kept as its own unit
+I20	Ischemic heart disease	3	493	TRUE	""
+I21	Ischemic heart disease	3	493	TRUE	""
+I25	Ischemic heart disease	3	493	TRUE	""
+I48	Atrial fibrillation and flutter	3	500	TRUE	""
+I84	I84				no level-3 GBD cause covers this code; kept as its own unit
+J44	Chronic obstructive pulmonary disease	3	509	TRUE	""
+J45	Asthma	3	515	TRUE	""
+K21	Upper digestive system diseases	3	536	TRUE	""
+K22	Upper digestive system diseases	3	536	FALSE	""
+K29	Upper digestive system diseases	3	528	TRUE	""
+K42	Inguinal, femoral, and abdominal hernia	3	531	TRUE	""
+K44	Inguinal, femoral, and abdominal hernia	3	531	TRUE	""
+K52	Inflammatory bowel disease	3	532	TRUE	manual: GBD groups non-infective gastroenteritis/colitis with IBD (K50-K52)
+K57	K57				no level-3 GBD cause covers this code; kept as its own unit
+K63	Other neoplasms	3	965	FALSE	manual: reaches Other neoplasms via K63.5 (polyp of colon); kept per plan
+K80	Gallbladder and biliary diseases	3	534	TRUE	""
+M17	Osteoarthritis	3	628	TRUE	""
+M51	Low back pain	3	630	FALSE	""
+M75	M75				no level-3 GBD cause covers this code; kept as its own unit
+N20	Urinary diseases and male infertility	3	594	TRUE	""
+N81	Gynecological diseases	3	608	TRUE	""
+R07	R07				no level-3 GBD cause covers this code; kept as its own unit
+R19	R19				no level-3 GBD cause covers this code; kept as its own unit
+Z88	Adverse effects of medical treatment	3	708	TRUE	""
+Z90	Adverse effects of medical treatment	3	708	FALSE	""
+Z92	Adverse effects of medical treatment	3	708	FALSE	""
+Z95	Adverse effects of medical treatment	3	708	FALSE	""
+Z96	Adverse effects of medical treatment	3	708	FALSE	""

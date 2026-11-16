@@ -15,3 +15,9 @@ manifest/*.rda
 meta/*.rda
 .claude/worktrees/
 logs/
+tools/
+# comparator GWAS summary statistics (multi-GB, third-party licences): keep only the
+# README and the manifest under version control
+extdata/*
+!extdata/README.md
+!extdata/comparator_sumstats.tsv

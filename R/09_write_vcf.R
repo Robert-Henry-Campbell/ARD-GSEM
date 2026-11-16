@@ -229,8 +229,123 @@ write_gwas_vcf <- function(gwas_list, snp_sumstats, output_path, metadata) {
   )
 }
 
+# --- GWAS-VCF from the post-GWAS QC artefacts (bifactor path) ------------------------------
+# REF/ALT follow GRCh37: the factor GWAS effect allele A1 is usually the reference allele, so
+# ES is the ALT-allele effect (-beta when A1 is REF) and AF is the ALT frequency (Pan-UKB EUR).
+# One multi-sample VCF (a sample per factor) plus single-sample VCFs per factor (ardmr reads
+# only the first sample column).
+
+.vcf_num <- function(x, digits = 6) {
+  out <- as.character(signif(x, digits))
+  out[is.na(x)] <- "."
+  out
+}
+
+postgwas_vcf_header <- function(config, sex, factors, reg, fai, sample_desc) {
+  pg <- config$postgwas %||% list()
+  contigs <- fread(fai, header = FALSE, select = 1:2, col.names = c("id", "len"))
+  contigs[, id := sub("^chr", "", id)]
+  contigs <- contigs[id %in% c(as.character(1:22), "X")]
+  contigs <- contigs[order(match(id, c(as.character(1:22), "X")))]
+  hdr <- c(
+    "##fileformat=VCFv4.2",
+    sprintf("##fileDate=%s", format(Sys.Date(), "%Y%m%d")),
+    "##source=ARD-GSEM_post-GWAS_pipeline",
+    "##reference=GRCh37 (hg19)",
+    sprintf("##contig=<ID=%s,length=%s,assembly=GRCh37>", contigs$id, contigs$len),
+    "##gsem_model=bifactor: general factor ARD + orthogonal domain factors (GenomicSEM userGWAS, DWLS, fix_measurement)",
+    "##gsem_inputs=Pan-UKB EUR both-sexes ICD-10 GWAS (SAIGE logistic; liability-scaled by GenomicSEM sumstats)",
+    "##gsem_scale=std.lv: SNP effects per SD of the latent genetic factor",
+    sprintf("##gsem_tiers=full: converged and |Z_smooth|<=%s; qfilter: full minus Q_SNP p<%s and their LD partners (r2>%s within %s kb, 1000G EUR)",
+            config$qc_filters$zsmooth_threshold %||% 1.96, pg$qsnp_p %||% 5e-8,
+            config$qc_filters$qfilter_r2 %||% 0.1, config$qc_filters$qfilter_kb %||% 1000)
+  )
+  for (f in names(pg$excluded_factors %||% list())) {
+    hdr <- c(hdr, sprintf("##gsem_excluded_factor=%s,reason=\"%s\"", f,
+                          gsub("\\s+", " ", pg$excluded_factors[[f]])))
+  }
+  for (f in factors) {
+    r <- reg[[f]]
+    hdr <- c(hdr, sprintf(paste0("##gsem_factor=<ID=%s,role=%s,n_indicators=%d,N_hat_std=%.0f,marker=%s,",
+                                 "marker_lambda=%.6g,N_hat_marker=%.0f,qsnp_df_gsem=%s,qsnp_df_used=%s,lambda_gc=%.4f>"),
+                          f, r$role, length(r$indicators), r$N_hat_std, r$marker, r$marker_lambda,
+                          r$N_hat_marker, paste(r$qsnp_df_gsem, collapse = "/"), r$qsnp_df_eff, r$lambda_gc_full))
+  }
+  c(hdr,
+    "##INFO=<ID=AF,Number=A,Type=Float,Description=\"ALT allele frequency, Pan-UKB EUR\">",
+    "##INFO=<ID=SI,Number=1,Type=Float,Description=\"Imputation INFO, Pan-UKB\">",
+    "##FORMAT=<ID=ES,Number=A,Type=Float,Description=\"Effect of the ALT allele per SD of the latent factor\">",
+    "##FORMAT=<ID=SE,Number=A,Type=Float,Description=\"Standard error of ES\">",
+    "##FORMAT=<ID=LP,Number=A,Type=Float,Description=\"-log10 p-value of ES\">",
+    "##FORMAT=<ID=AF,Number=A,Type=Float,Description=\"ALT allele frequency, Pan-UKB EUR\">",
+    "##FORMAT=<ID=SS,Number=A,Type=Float,Description=\"Effective sample size N_hat (GenomicSEM wiki formula, std.lv scale)\">",
+    "##FORMAT=<ID=HET,Number=A,Type=Float,Description=\"Q_SNP heterogeneity chi-square\">",
+    "##FORMAT=<ID=HP,Number=A,Type=Float,Description=\"Q_SNP p-value at the df used (see gsem_factor qsnp_df_used)\">",
+    "##FORMAT=<ID=QF,Number=A,Type=Integer,Description=\"1 = fails the qfilter tier (Q_SNP hit or LD partner of one)\">",
+    "##FORMAT=<ID=SF,Number=A,Type=Integer,Description=\"1 = userGWAS fit unusable (no estimate / error / smoothing)\">",
+    sprintf("##SAMPLE=<ID=%s,Description=\"%s\">", factors, sample_desc[factors]))
+}
+
+write_postgwas_vcf <- function(config, sex, out_dir) {
+  dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
+  reg <- read_factor_registry(config, sex)
+  factors <- postgwas_factors(config)
+  first <- load_postgwas(config, sex, factors[1], "all",
+                         cols = c("CHR", "BP", "SNP", "A1", "A2", "a1_is_ref", "EAF_A1", "INFO"))
+  keep <- !is.na(first$a1_is_ref)
+  base <- first[keep]
+  base[, `:=`(CHROM = fifelse(CHR == 23L, "X", as.character(CHR)),
+              REF = fifelse(a1_is_ref, A1, A2), ALT = fifelse(a1_is_ref, A2, A1),
+              AF = fifelse(a1_is_ref, 1 - EAF_A1, EAF_A1))]
+  sgn <- fifelse(base$a1_is_ref, -1, 1)
+  info_col <- paste0("AF=", .vcf_num(base$AF), ";SI=", .vcf_num(base$INFO, 4))
+  sample_cols <- list()
+  for (f in factors) {
+    d <- load_postgwas(config, sex, f, "all",
+                       cols = c("SNP", "beta", "SE", "LOG10P", "Q_SNP", "Q_SNP_pval", "pass_full", "pass_qfilter"))[keep]
+    stopifnot(identical(d$SNP, base$SNP))
+    sample_cols[[f]] <- paste(.vcf_num(sgn * d$beta), .vcf_num(d$SE), .vcf_num(d$LOG10P, 5),
+                              .vcf_num(base$AF), round(reg[[f]]$N_hat_std),
+                              .vcf_num(d$Q_SNP, 5), .vcf_num(d$Q_SNP_pval, 4),
+                              as.integer(!d$pass_qfilter), as.integer(!d$pass_full), sep = ":")
+  }
+  fixed <- data.table(base$CHROM, base$BP, base$SNP, base$REF, base$ALT, ".", "PASS", info_col,
+                      "ES:SE:LP:AF:SS:HET:HP:QF:SF")
+  desc <- setNames(sprintf("GenomicSEM bifactor factor %s (%s)", factors,
+                           vapply(factors, function(f) reg[[f]]$role, character(1))), factors)
+  fai <- paste0(config$refs$hg19_fasta, ".fai")
+  write_one <- function(path, fs) {
+    plain <- sub("\\.gz$", "", path)
+    hdr <- postgwas_vcf_header(config, sex, fs, reg, fai, desc)
+    writeLines(c(hdr, paste(c("#CHROM", "POS", "ID", "REF", "ALT", "QUAL", "FILTER", "INFO",
+                              "FORMAT", fs), collapse = "\t")), plain)
+    fwrite(cbind(fixed, as.data.table(sample_cols[fs])), plain, sep = "\t", quote = FALSE,
+           col.names = FALSE, append = TRUE)
+    Rsamtools::bgzip(plain, dest = path, overwrite = TRUE)
+    unlink(plain)
+    Rsamtools::indexTabix(path, format = "vcf")
+    path
+  }
+  basename_vcf <- config$vcf$basename %||% paste0(sex, "_bifactor_gsem")
+  paths <- write_one(file.path(out_dir, paste0(basename_vcf, ".vcf.gz")), factors)
+  for (f in factors) paths <- c(paths, write_one(file.path(out_dir, sprintf("%s_%s.vcf.gz", basename_vcf, f)), f))
+  list(paths = paths, n_variants = nrow(base), n_dropped_unoriented = sum(!keep))
+}
+
 run_write_vcf <- function(config, sex) {
   log_info("vcf", sprintf("=== VCF write stage: %s ===", sex))
+
+  if (exists("factor_registry_path", mode = "function") &&
+      file.exists(factor_registry_path(config, sex))) {
+    out_dir <- stage_dir(config, sex, "vcf")
+    dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
+    res <- write_postgwas_vcf(config, sex, out_dir)
+    log_info("vcf", sprintf("Wrote %d VCF(s), %s variants (%d dropped: REF not resolvable)",
+                            length(res$paths), format(res$n_variants, big.mark = ","),
+                            res$n_dropped_unoriented))
+    write_stage_manifest("vcf", sex, config, c(res$paths, paste0(res$paths, ".tbi")))
+    return(invisible(res))
+  }
 
   gwas_dir <- file.path(config$paths$output_dir, sex, "gwas")
   gwas_path <- file.path(gwas_dir, paste0(sex, "_userGWAS_raw.rds"))

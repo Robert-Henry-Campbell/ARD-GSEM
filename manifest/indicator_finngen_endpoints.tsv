@@ -1,0 +1,35 @@
+icd10	endpoint	endpoint_name	fg_cases	note
+D12	CD2_BENIGN_COLORECANI	Benign neoplasm of colon, rectum, anus and anal canal	29048	single-code endpoint
+E03	E4_HYTHY_AI_STRICT	Hypothyroidism, strict autoimmune	54752	FinnGen's main hypothyroidism endpoint (E03 with reimbursement); the ICD-only alternatives have < 500 cases
+E11	T2D	Type 2 diabetes, definitions combined	82878	registry + medication definition; T2D_WIDE (55,418) is the wider alternative
+E66	E4_OBESITY	Obesity	31499	single-code endpoint
+E78	E4_LIPOPROT	Disorders of lipoprotein metabolism and other lipidaemias	59366	whole E78; E4_HYPERCHOL is E78.0 only
+G47	G6_SLEEPAPNO	Sleep apnoea	56885	G47.3 is the dominant G47 code in hospital records; G6_SLEEPDISOTH (other sleep disorders, 4,625) is the alternative
+I20	I9_ANGINA	Angina pectoris	44588	single-code endpoint
+I21	I9_MI_STRICT	Myocardial infarction, strict	31666	I21 + I22
+I25	I9_CORATHER	Coronary atherosclerosis	63307	I25 (with I20-I21 history excluded from controls in FinnGen)
+I48	I9_AF	Atrial fibrillation and flutter	63532	single-code endpoint
+I84	K11_HAEMORR	Haemorrhoids and perianal venous thrombosis	13841	I84 (ICD-10 before 2017) = K64; FinnGen endpoint covers both
+J44	J10_COPD	COPD	24138	whole J44; COPD_LATER/COPD_EARLY are age-stratified subsets
+J45	J10_ASTHMA_EXMORE	Asthma (more control exclusions)	59100	J45-J46 all diagnoses
+K21	K11_REFLUX	Gastro-oesophageal reflux disease	36025	single-code endpoint
+K22	K11_OTHDISOES	Other diseases of oesophagus	3907	single-code endpoint
+K29	K11_OTHGASTR	Other gastritis (incl. duodenitis)	10062	single-code endpoint
+K42	K11_UMBHER	Umbilical hernia	11934	single-code endpoint
+K44	K11_DIAHER	Diaphragmatic hernia	16034	single-code endpoint
+K52	K11_OTHENTERCOL	Other noninfective gastroenteritis and colitis	11212	single-code endpoint
+K57	K11_DIVERTIC	Diverticular disease of intestine	43138	single-code endpoint
+K63	K11_OTHINT	Other diseases of intestine	4877	single-code endpoint
+K80	K11_CHOLELITH	Cholelithiasis	49834	single-code endpoint
+M17	M13_ARTHROSIS_KNEE	Gonarthrosis	61356	single-code endpoint
+M51	M13_INTERVERTEB	Other intervertebral disc disorders	51683	single-code endpoint
+M75	M13_SHOULDER	Shoulder lesions	47311	single-code endpoint
+N20	N14_CALCUKIDUR	Calculus of kidney and ureter	12999	single-code endpoint
+N81	N14_FEMGENPROL	Female genital prolapse	23074	female-only endpoint
+R07			NA	no FinnGen endpoint for symptom codes
+R19			NA	no FinnGen endpoint for symptom codes
+Z88			NA	no FinnGen endpoint for Z codes
+Z90			NA	no FinnGen endpoint for Z codes
+Z92			NA	no FinnGen endpoint for Z codes
+Z95			NA	no FinnGen endpoint for Z codes
+Z96			NA	no FinnGen endpoint for Z codes

@@ -208,31 +208,42 @@ smoke:
   n_snps: 100
   min_qsnp_nonna_frac: 0.10
 
+# Post-GWAS QC (GenomicSEM authors' recommendations). Builds two tiers per factor:
+#  full    = converged (no NA estimate / error / "solution has NOT been found"), |Z_smooth| <= 1.96
+#  qfilter = full minus Q_SNP p < postgwas$qsnp_p and their LD partners (r2 > qfilter_r2
+#            within qfilter_kb, 1000G EUR); SNPs with no LD information (chrX, not in the
+#            panel) lose a +-nold_window_kb window instead.
 qc_filters:
-  qsnp_pval_threshold: 5.0e-8
-  # PLINK --clump-p2: per Wiki 5, LD-buddies of Q_SNP-significant hits are dropped
-  # regardless of their own Q_SNP_pval. Setting p2=1 turns the threshold off so
-  # any SNP in LD with an index hit is included in the clump.
-  clump_p2: 1.0
-  clump_r2: 0.1
-  clump_kb: 250
   zsmooth_threshold: 1.96
-  plink_binary: plink
+  fail_warning_regex: "solution has NOT been found"
+  # lavaan 0.6.21 + GenomicSEM 0.0.5 notice on every row, and NLMINB's gradient notice, which
+  # only appears when I25's residual sits on its 0.001 bound (estimates reproduce; benign).
+  benign_warning_regex:
+    - "override\\(s\\) the options in slotOptions"
+    - "gradient are \\(near\\) zero"
+  qfilter_r2: 0.1
+  qfilter_kb: 1000
+  nold_window_kb: 500
 
 factor_ldsc:
   intercept_warn_low: 0.9
   intercept_warn_high: 1.1
+  qsnp_ldsc: true
+  rg_with_indicators: true
 
 plots:
   manhattan_sig_line: 5.0e-8
   manhattan_sugg_line: 1.0e-5
   top_snps_n: 20
-  # Manhattan + Miami downsampling: keep every SNP with P < manhattan_keep_threshold,
-  # plus a random manhattan_bg_keep_frac fraction of the rest. Doesn't change the
-  # significant signal, ~10x faster to render at 1M-point scale.
-  # Set manhattan_bg_keep_frac: 1.0 to disable downsampling.
+  # Manhattan + Miami downsampling: keep every SNP with P < manhattan_keep_threshold.
+  # Manhattans thin the rest to one point per output pixel (visually lossless); Miami
+  # plots keep a random manhattan_bg_keep_frac fraction of the rest (1.0 disables).
   manhattan_keep_threshold: 1.0e-3
   manhattan_bg_keep_frac: 0.1
+  # Manhattan y-axis is linear up to this -log10(P); a factor whose top peak exceeds it
+  # by more than a third gets the range above it compressed into the top quarter of the
+  # panel (shaded), so one or two extreme loci don't flatten the rest. .inf disables.
+  manhattan_compress_above: 30
 
 parallel:
   n_workers: 24
@@ -242,3 +253,246 @@ logging:
   level: INFO
   json: true
   console: true
+
+# --- Post-GWAS (stages qc_filters onwards) ------------------------------------------------
+# Shared settings, hashed into every post-GWAS stage's resume manifest (R/utils.R
+# stage_hash_payload). Kept out of `paths:` and the upstream stage blocks so that the
+# finished munge..gwas manifests stay valid.
+postgwas:
+  factors: [ARD, Cardiometabolic, UpperGI]
+  excluded_factors:
+    Osteoarthritis: >-
+      under-identified: only 2 indicators (M17, Z96) on an orthogonal specific factor, so
+      their loadings are not separately identified and the factor's GWAS is not interpretable
+  # The bifactor GWAS ran with std.lv = TRUE (R/08_gwas.R run_gwas_bifactor): betas are per
+  # SD of the latent factor. Marker-scaled (unit-loading) betas and N_hat are derived post hoc.
+  std_lv: true
+  marker_indicator: max_std
+  # GenomicSEM gives each factor df = (its indicators - 1). In this bifactor ARD's 34
+  # indicators carry all 4 SNP paths, so its residual Q_SNP has 34 - 4 = 30 df.
+  qsnp_df_override:
+    ARD: 30
+  p_gws: 5.0e-8
+  qsnp_p: 5.0e-8
+  nhat_maf_threshold: 0.10
+  mhc: {chr: 6, start: 25000000, end: 35000000}
+  workers: 16
+
+# Reference files for post-GWAS stages (relative paths are under project root).
+refs:
+  ld_1000g_bfile: reference/1000G_plink/EUR
+  hg19_fasta: /mnt/sdg/robert/deepwidegp/DeepWideGP-Scripts/data/1-inputs/SNP_array_overlap/reference/hg19.fa
+  panukb_variant_qc: /mnt/sdg/robert/ardmr/ardmr_cache/panukb/full_variant_qc_metrics.txt.bgz
+  neale_variants: /mnt/sdg/robert/ardmr/ardmr_cache/neale/variants.tsv.bgz
+  gencode_gtf: reference/postgwas/gene/gencode.v19.annotation.gtf.gz
+  chain_hg19_to_hg38: reference/postgwas/chain/hg19ToHg38.over.chain.gz
+  # UKB individual-level genotypes (read-only; another user's directory, application 15181).
+  ukb_pgen_dir: /mnt/sdh/upamanyu/UKB/Genomics_PGEN
+  ukb_sample_qc: /mnt/sdh/upamanyu/UKB/files/genetic_QC_participant.tsv
+  ukb_withdrawals: ""
+  ardmr_dir: /mnt/sdg/robert/ardmr/ARD-Mendelian-Randomization
+  # PRS evaluation (read-only UKB data of application 15181; never written to)
+  ukb_asian_black_pgen_dir: /mnt/sdh/upamanyu/UKB/Genomics_PGEN/Asian_Black
+  ukb_pheno_extract: /mnt/sdh/upamanyu/UKB/files/variables_15181_18_Nov_24.tsv
+  ukb_unrelated_south_asian: /mnt/sdh/upamanyu/UKB/Genomics_PGEN/Asian_Black/UKB_Asian_grm_singleton_0.025.manual_singleton.txt
+  ukb_unrelated_black: /mnt/sdh/upamanyu/UKB/Genomics_PGEN/Asian_Black/UKB_Black_grm_singleton_0.025.manual_singleton.txt
+  finngen_dir: reference/postgwas/finngen
+  finngen_local_dir: /mnt/sdg/robert/ardmr/GSEM-finn-ukb-mvp/output/sumstats
+  finngen_manifest: manifest/finngen_R12_summary_stats_manifest.tsv
+  vep_cache: reference/postgwas/vep/cache
+  eqtlgen_cis: reference/postgwas/eqtl/eqtlgen/2019-12-11-cis-eQTLsFDR-ProbeLevel-CohortInfoRemoved-BonferroniAdded.txt.gz
+  eqtlgen_af: reference/postgwas/eqtl/eqtlgen/2018-07-18_SNP_AF_for_AlleleB_combined_allele_counts_and_MAF_pos_added.txt.gz
+  eqtlcat_paths: reference/postgwas/eqtl/eqtlcat/tabix_ftp_paths.tsv
+  ukbppp_cache: reference/postgwas/ukbppp
+  gtex_median_tpm: reference/postgwas/gtex/GTEx_Analysis_2017-06-05_v8_RNASeQCv1.1.9_gene_median_tpm.gct.gz
+  magma_gene_loc: reference/postgwas/magma/NCBI37.3.gene.loc
+  magma_bfile: reference/postgwas/magma/g1000_eur
+  msigdb_gmt: reference/postgwas/magma/msigdb.v2024.1.Hs.entrez.gmt
+  ldsc_baselineld: reference/postgwas/ldsc/baselineLD.
+  ldsc_baseline: reference/postgwas/ldsc/baseline_v1.2/baseline.
+  ldsc_weights: reference/postgwas/ldsc/1000G_Phase3_weights_hm3_no_MHC/weights.hm3_noMHC.
+  ldsc_frq: reference/postgwas/ldsc/1000G_Phase3_frq/1000G.EUR.QC.
+  ldsc_plink: reference/postgwas/ldsc/1000G_EUR_Phase3_plink/1000G.EUR.QC.
+  ldsc_hm3_list: reference/postgwas/ldsc/hm3_no_MHC.list.txt
+  prscs_ref: reference/postgwas/prscs/ldblk_ukbb_eur
+  ldpred2_ld_dir: /mnt/sdg/robert/deepwidegp/DeepWideGP-Scripts/data/10-panukb/ldpred2_ukbLDmatrix_hapmap3_snps/ldref
+  sbayesrc_ld: reference/postgwas/sbayesrc/ukbEUR_Imputed
+  sbayesrc_annot: reference/postgwas/sbayesrc/annot_baseline2.2.txt
+  fusion_ldref: reference/postgwas/fusion/LDREF/1000G.EUR.
+  fusion_weights_dir: reference/postgwas/fusion/weights
+  tabula_sapiens_h5ad: reference/postgwas/scdrs/TabulaSapiens.h5ad
+
+# External binaries (scripts/install_postgwas_tools.sh). plink 1.9 is the copy bundled
+# with the genetics.binaRies R package.
+tools:
+  plink: /mnt/sdg/robert/renv-cache/v5/linux-ubuntu-jammy/R-4.4/x86_64-pc-linux-gnu/genetics.binaRies/0.1.2/b2398825d8e6f136055e2aff3a236c4a/genetics.binaRies/bin/plink
+  plink2: /mnt/sdg/robert/miniforge3/envs/gsem-cli/bin/plink2
+  gcta: /mnt/sdg/robert/miniforge3/envs/gsem-cli/bin/gcta64
+  bcftools: /mnt/sdg/robert/miniforge3/envs/gsem-cli/bin/bcftools
+  tabix: /mnt/sdg/robert/miniforge3/envs/gsem-cli/bin/tabix   # remote eQTL Catalogue reads (the system tabix is broken)
+  vep_sif: tools/vep_115.sif
+  py: /mnt/sdg/robert/miniforge3/envs/gsem-py/bin/python
+  apptainer: /usr/bin/apptainer
+  magma: tools/magma/magma
+  prscs: tools/prscs/PRScs.py   # bioconda PRS-CS copied and patched for scipy >= 1.12 (install script section 8)
+  sbayesrc_sif: tools/sbayesrc.sif
+  fusion_dir: tools/fusion_twas
+  fusion_rlib: tools/rlib
+  scdrs: /mnt/sdg/robert/miniforge3/envs/gsem-scdrs/bin/scdrs
+  scdrs_python: /mnt/sdg/robert/miniforge3/envs/gsem-scdrs/bin/python
+  # Python 3 port of bulik/ldsc, copied from the GSEM-finn-ukb-mvp project into tools/ldsc
+  # and patched for bitarray >= 3 (see tools/ldsc/PATCHED_FOR_GSEM.txt); runs under that
+  # project's venv.
+  ldsc_python: /mnt/sdg/robert/ardmr/GSEM-finn-ukb-mvp/.venv/bin/python
+  ldsc_dir: tools/ldsc
+
+vcf:
+  basename: bothsex_bifactor_gsem
+
+loci:
+  # Grotzinger et al. 2019: independent hits r2 < 0.1 within 500 kb (1 Mb on chr6 and chr8).
+  clump_r2: 0.1
+  clump_kb: 500
+  clump_kb_chr6_8: 1000
+  locus_flank_kb: 500
+  unique_r2: 0.1
+
+mr_export:
+  # ardmr's instrument defaults (preprocess_exposure_snps).
+  clump_r2: 0.001
+  clump_kb: 10000
+  f_stat_min: 10
+  exclude_mhc: true
+
+annotate:
+  candidate_window_kb: 500
+  vep_cache_version: 115
+  vep_fork: 16
+  annovar: false
+
+ld_panel:
+  n_ld: 50000          # dosage LD for SuSiE
+  n_cojo: 20000        # nested hard-call panel for GCTA-COJO (> 4,000 per the guide)
+  seed: 20261108
+  max_region_mb: 3     # wider merged loci are split at midpoints between hits
+  workers: 4
+  plink_threads: 8
+  plink_memory_mb: 32000
+
+finemap:
+  L: 10
+  coverage: 0.95
+  min_abs_corr: 0.5
+  refine: true
+  max_iter: 1000
+  max_af_diff: 0.1     # drop SNPs whose UKB-panel A1 frequency differs from Pan-UKB's by more
+  workers: 12
+
+cojo:
+  wind_kb: 10000
+  collinear: 0.9
+  diff_freq: 0.2
+  threads: 4
+  workers: 8
+
+qtl_lookup:
+  max_cs_members: 20   # lead + top-PIP members queried (a member stands in when the lead is untested)
+  eqtlcat_quant: [ge, microarray, aptamer]
+  cis_kb: 1000
+  workers: 8
+  ukbppp_keep_tars: false
+
+magma:
+  window: "35,10"      # kb upstream,downstream (GWASTutorial example)
+
+gene_priority:
+  window_kb: 500
+  weights: {coding_pip: 2, qtl_coloc: 2, twas: 1, magma: 1, nearest_tss: 1, cs_overlap: 1, qtl_lookup: 0.5}
+
+prs:
+  methods: [ct, prscs, ldpred2_auto, sbayesrc]
+  ct_r2: 0.1           # GWASTutorial clumping (r2 0.1 within 250 kb)
+  ct_kb: 250
+  ct_thresholds: [5.0e-8, 1.0e-6, 1.0e-4, 1.0e-3, 0.01, 0.05, 0.1, 0.2, 0.5, 1]
+  ldpred2_chains: 30
+  sbayesrc_threads: 16
+  seed: 20261108
+  workers: 22
+  # comparator scores built from external summary statistics with the same methods
+  external_manifest: extdata/comparator_sumstats.tsv
+  # Comparator Bayesian weights are queued after the factor weights (each PRS-CS/LDpred2/SBayesRC fit
+  # takes hours; 7 comparators x 3 methods would hold the chain for a day): the chain runs with [ct],
+  # then `run_post_install.sh prs prs_eval figures` is repeated with the full list below.
+  external_methods: [ct]   # full list: [ct, prscs, ldpred2_auto, sbayesrc]
+
+twas:
+  workers: 48
+
+scdrs:
+  max_per_type: 1000   # Tabula Sapiens cells per cell_ontology_class (seeded subsample)
+  n_genes: 1000        # top MAGMA genes per factor
+  n_ctrl: 1000
+  seed: 20261108
+
+sldsc:
+  top_frac: 0.1        # LDSC-SEG: top 10% most tissue-specific genes
+  flank_kb: 100
+  workers: 22
+
+coloc:
+  pairs: bonferroni    # bonferroni | fdr (which lookup hits to test)
+  p1: 1.0e-4
+  p2: 1.0e-4
+  p12: 5.0e-6
+  workers: 6           # parallel eQTL Catalogue region reads / lbf streams
+
+# Publication figures (Nature format; R/32_figures*.R). Panels are fig_<name>(config, sex)
+# functions; a panel whose inputs are not there yet is skipped and listed in figure_index.tsv.
+figures:
+  font_family: Arial
+  dpi: 600
+  only: []
+  main:
+    - {name: fig1_factor_model, width_mm: 183, height_mm: 120, ncol: 3,
+       panels: [fig_model_loadings, fig_model_rg_vs_loading, fig_model_h2]}
+    - {name: fig2_factor_gwas, width_mm: 183, height_mm: 200, ncol: 1,
+       panels: [fig_gwas_manhattan_ARD, fig_gwas_manhattan_Cardiometabolic, fig_gwas_manhattan_UpperGI, fig_gwas_miami_ard_qsnp]}
+    - {name: fig3_loci, width_mm: 183, height_mm: 150, ncol: 2,
+       panels: [fig_loci_counts, fig_loci_qsnp_drivers, fig_loci_genome_map]}
+    - {name: fig4_enrichment, width_mm: 183, height_mm: 160, ncol: 2,
+       panels: [fig_sldsc_baseline, fig_sldsc_tissues]}
+    - {name: fig5_genes, width_mm: 183, height_mm: 180, ncol: 2,
+       panels: [fig_finemap_cs, fig_coloc_heatmap, fig_gene_priority, fig_magma_sets]}
+    - {name: fig6_prs_eval, width_mm: 183, height_mm: 220, ncol: 2, design: "AB\nCD\nEE",
+       panels: [fig_prs_irr, fig_prs_decile, fig_prs_methods, fig_prs_comparators, fig_prs_finngen]}
+  extended:
+    - {name: ed1_efa, width_mm: 89, height_mm: 70, ncol: 1, panels: [fig_ed_scree]}
+    - {name: ed2_rg_heatmap, width_mm: 183, height_mm: 183, ncol: 1, panels: [fig_ed_rg_heatmap]}
+    - {name: ed3_qq, width_mm: 183, height_mm: 65, ncol: 3, panels: [fig_ed_qq_ARD, fig_ed_qq_Cardiometabolic, fig_ed_qq_UpperGI]}
+    - {name: ed4_qsnp_manhattan, width_mm: 183, height_mm: 150, ncol: 1,
+       panels: [fig_ed_qsnp_manhattan_ARD, fig_ed_qsnp_manhattan_Cardiometabolic, fig_ed_qsnp_manhattan_UpperGI]}
+    - {name: ed5_sldsc_all, width_mm: 183, height_mm: 230, ncol: 1, panels: [fig_ed_sldsc_all_annotations]}
+    - {name: ed6_prs_sample, width_mm: 183, height_mm: 100, ncol: 2, panels: [fig_ed_prs_qc_flow, fig_ed_prs_pca]}
+    - {name: ed7_prs_robustness, width_mm: 183, height_mm: 200, ncol: 2, design: "AB\nCD\nEE",
+       panels: [fig_ed_prs_gbd_vs_icd, fig_ed_prs_mortality, fig_ed_prs_sensitivity, fig_ed_prs_negative_control, fig_ed_prs_thresholds]}
+
+# PRS evaluation in the UKB South Asian and Black participants (R/31_prs_eval*.R), analysed
+# separately. Primary: negative binomial of the ARD indicator-diagnosis count (ICD-10 three-
+# character unit) -> IRR per SD. Sensitivities: GBD-cause roll-up unit; all-cause mortality.
+prs_eval:
+  groups:
+    SouthAsian: {codes: [3, 3001, 3002, 3003, 3004], label: "South Asian"}
+    Black: {codes: [4, 4001, 4002, 4003], label: "Black"}
+  sample_qc: {require_genetic_qc: true, require_sex_match: true, exclude_sex_aneuploidy: true, exclude_het_missing_outliers: true}
+  relatedness: {primary: king, king_cutoff: 0.0442, sensitivity: gcta_list}   # 3rd degree
+  pcs: {n: 10, source: within_group, sensitivity_global_pcs: 4}
+  censor: {hes: "2022-10-31", death: "2022-12-19"}
+  gbd_map: manifest/indicator_gbd_causes.tsv
+  injury_chapters: [S]      # negative-control count; chapter T tracks hospital contact (see R/31_prs_eval_pheno.R)
+  weights: {methods: [ct, prscs, ldpred2_auto, sbayesrc], ct_selection: cross_group, primary_method: ct}
+  finngen: {run: true, endpoints: manifest/indicator_finngen_endpoints.tsv}
+  min_events: 20
+  seed: 20261108
+  plink_threads: 8
+  plink_memory_mb: 32000
+  score_parallel_chr: 4

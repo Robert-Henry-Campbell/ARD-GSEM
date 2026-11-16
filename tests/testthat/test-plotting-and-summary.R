@@ -19,6 +19,64 @@ test_that("compute_lambda_gc is NA for too-small input", {
   expect_true(is.na(compute_lambda_gc(c(0.1, 0.5))))
 })
 
+test_that("neg_log10_p recovers P values that underflowed to 0 from Z", {
+  expect_equal(neg_log10_p(c(0.1, 1e-10)), c(1, 10))
+  expect_equal(neg_log10_p(0, 40), -(pnorm(-40, log.p = TRUE) + log(2)) / log(10))
+  expect_gt(neg_log10_p(0, 40), 300)
+})
+
+test_that("chrom_labels maps PLINK codes 23-26 and strips chr prefixes", {
+  expect_equal(chrom_labels(c(1, 22, 23, 24, 25, 26)), c("1", "22", "X", "Y", "XY", "MT"))
+  expect_equal(chrom_labels(c("chr6", "chrX")), c("6", "X"))
+})
+
+test_that("p_label formats thresholds for plotmath and plain text", {
+  expect_equal(p_label(5e-8), "5 %*% 10^-8")
+  expect_equal(p_label(1e-5), "10^-5")
+  expect_equal(p_label(5e-8, plotmath = FALSE), "5×10⁻⁸")
+})
+
+test_that("parse_indicators reads each factor's indicators from lavaan syntax", {
+  ind <- parse_indicators("ARD =~ D12 + E03\nCM =~ NA*E11 + E66\nARD ~~ 0*CM\nD12 ~~ rvv_D12*D12")
+  expect_equal(ind, list(ARD = c("D12", "E03"), CM = c("E11", "E66")))
+})
+
+test_that("distance_clump merges SNPs within the window and counts the MHC once", {
+  d <- data.table(CHR = c("1", "1", "1", "6", "6", "6"),
+                  BP = c(1e6, 1.3e6, 3e6, 26e6, 30e6, 34e6),
+                  lp = c(10, 9, 8, 12, 11, 9))
+  leads <- distance_clump(d, window = 5e5, mhc = list(chr = 6, start = 25e6, end = 35e6))
+  expect_equal(sort(leads$BP), c(1e6, 3e6, 26e6))
+  expect_equal(nrow(distance_clump(d, window = 5e5)), 5L)
+})
+
+test_that("compress_above_transform is linear below the break and invertible above it", {
+  tr <- compress_above_transform(30, 0.1)
+  expect_equal(tr$transform(c(10, 30, 130)), c(10, 30, 40))
+  expect_equal(tr$inverse(tr$transform(c(5, 50, 97))), c(5, 50, 97))
+})
+
+test_that("plot_manhattan draws every SNP below keep_threshold and thins the rest", {
+  set.seed(5)
+  n <- 60000
+  g <- data.table(CHR = sample(1:23, n, replace = TRUE),
+                  BP = sample.int(5e7, n, replace = TRUE),
+                  ES = rnorm(n), SE = 1, Q_SNP_pval = runif(n))
+  g[, P := 2 * pnorm(-abs(ES / SE))]
+  # An underflowed hit (P = 0, Z = 40) and a Q_SNP-heterogeneous genome-wide hit.
+  g[1:2, `:=`(CHR = 2L, BP = c(1e6, 2e6), ES = c(40, 9), P = c(0, 2 * pnorm(-9)),
+              Q_SNP_pval = c(0.5, 1e-9))]
+  p <- plot_manhattan(g, factor_name = "F1", sex = "bothsex", width = 3, height = 1, dpi = 50)
+  lp <- neg_log10_p(g$P, g$ES / g$SE)
+  expect_equal(sum(p$data$lp >= 3), sum(lp >= 3))
+  expect_lt(nrow(p$data), n)
+  expect_gt(max(p$data$lp), 300)
+  expect_true("X" %in% p$scales$get_scales("x")$labels)
+  het <- Filter(function(l) inherits(l$geom, "GeomPoint") && is.data.frame(l$data), p$layers)
+  expect_equal(nrow(het[[1L]]$data), 1L)
+  expect_no_error(ggplot2::ggplot_build(p))
+})
+
 test_that("factor_summary_row produces expected columns", {
   set.seed(3)
   n <- 100
