@@ -1,6 +1,6 @@
 for (f in c("R/14_split_vcf.R", "R/15_postgwas_common.R", "R/18_annotate.R", "R/19_ld_panel.R",
             "R/20_finemap.R", "R/22_qtl_lookup.R", "R/23_coloc.R", "R/24_gene_priority.R", "R/25_magma.R",
-            "R/26_sldsc.R")) {
+            "R/26_sldsc.R", "R/28_scdrs.R")) {
   source(file.path(project_root, f), local = TRUE)
 }
 
@@ -184,6 +184,30 @@ test_that("MAGMA output tables are read past the comment header", {
   x <- magma_read_out(f)
   expect_identical(x$VARIABLE, c("Liver", "Lung"))
   expect_equal(x$P, c(1e-5, 0.3))
+})
+
+test_that("scDRS scores are reused only for the same call and gene sets, with every factor scored", {
+  tmp <- tempfile(); dir.create(tmp)
+  inputs <- file.path(tmp, c("ts.h5ad", "ts_cov.tsv")); file.create(inputs)
+  Sys.setFileTime(inputs, Sys.time() - 3600)
+  out <- file.path(tmp, "scdrs"); dir.create(out)
+  file.create(file.path(out, paste0(rep(c("F1", "F2", "F3"), each = 2), c(".score.gz", ".full_score.gz"))))
+  log <- file.path(tmp, "compute_score.log")
+  args <- c("compute-score", "--h5ad-file", inputs[1], "--n-ctrl", "1000", "--out-folder", out)
+  # the CLI echoes every option (defaults too) under "Call:"; stdout can land after a progress bar's \r
+  writeLines(c("Call: scdrs compute-score \\", paste("--h5ad-file", inputs[1], "\\"), "--weight-opt vs \\",
+               "--n-ctrl 1000 \\", paste("--out-folder", out), "",
+               "Trait=F1, n_gene=900: 5/100 FDR<0.1 cells, 9/100 FDR<0.2 cells (sys_time=10.0s)",
+               "\rComputing control scores: 100%|#| 1000/1000Trait=F2, n_gene=880: 0/100 FDR<0.1 cells"), log)
+  gs <- c("TRAIT\tGENESET", "F1\tG1:2.5,G2:1.9", "F2\tG3:3.1")
+  expect_true(scdrs_scores_current(args, c("F1", "F2"), log, inputs, gs, gs))
+  expect_false(scdrs_scores_current(args, c("F1", "F2"), log, inputs, NULL, gs))                  # first run
+  expect_false(scdrs_scores_current(args, c("F1", "F2"), log, inputs, gs, c(gs, "F3\tG4:2.2")))   # gene sets changed
+  expect_false(scdrs_scores_current(replace(args, 5, "500"), c("F1", "F2"), log, inputs, gs, gs)) # other options
+  expect_false(scdrs_scores_current(args, c("F1", "F2", "F3"), log, inputs, gs, gs))              # F3 never finished
+  expect_false(scdrs_scores_current(args, c("F1", "F4"), log, inputs, gs, gs))                    # no F4 score files
+  Sys.setFileTime(inputs, Sys.time() + 60)
+  expect_false(scdrs_scores_current(args, c("F1", "F2"), log, inputs, gs, gs))                    # inputs rebuilt since
 })
 
 test_that("gene priority scores and labels each line of evidence", {

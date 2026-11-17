@@ -195,7 +195,12 @@ patch("mcmc_gtb.py", "% (snp, psi))", "% (snp, float(sp.ravel(psi)[0])))")
 patch("mcmc_gtb.py", "% phi_est )", "% float(sp.ravel(phi_est)[0]) )")
 PYEOF
 
-# --- 9. report ----------------------------------------------------------------------------------
+# --- 9. scDRS 1.0.2 for numpy >= 2 ------------------------------------------------------------
+# perform-downstream's Geary's C test casts with np.float_, which numpy 2.0 removed (it was np.float64)
+SCDRS_PKG="$("$ENVS/gsem-scdrs/bin/python" -I -c 'import importlib.util as u; print(u.find_spec("scdrs").submodule_search_locations[0])')"
+sed -i -E 's/np\.float_([,)])/np.float64\1/g' "$SCDRS_PKG/method.py"
+
+# --- 10. report -------------------------------------------------------------------------------
 log "versions:"
 "$ENVS/gsem-cli/bin/plink2" --version | head -1
 "$ENVS/gsem-cli/bin/bcftools" --version | head -1

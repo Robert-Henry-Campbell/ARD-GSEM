@@ -6,6 +6,22 @@
 #    (Monte-Carlo p, FDR over cell types)
 # (LDSC-SEG runs in the sldsc stage.)
 
+# compute-score is the slow step (~2 h per factor on one core), so a rerun (e.g. after a downstream
+# failure) reuses its output when nothing feeding it has changed: the log shows the same options (the
+# CLI echoes each one under "Call:") and "Trait=<factor>, ..." for every factor (printed only after both
+# score files are written), the gene sets just munged from MAGMA are unchanged, and the scores are newer
+# than the Tabula Sapiens inputs.
+scdrs_scores_current <- function(args, factors, log_file, inputs, gs_prev, gs_now) {
+  out <- args[match("--out-folder", args) + 1L]
+  sf <- file.path(out, paste0(rep(factors, each = 2L), c(".score.gz", ".full_score.gz")))
+  if (is.null(gs_prev) || !identical(gs_prev, gs_now) || !all(file.exists(c(sf, log_file, inputs)))) return(FALSE)
+  lg <- sub("\\s*\\\\$", "", readLines(log_file, warn = FALSE))
+  opts <- args[-1L]
+  same_call <- all(paste(opts[c(TRUE, FALSE)], opts[c(FALSE, TRUE)]) %in% lg)
+  scored <- all(vapply(factors, function(f) any(grepl(paste0("Trait=", f, ", n_gene="), lg, fixed = TRUE)), logical(1)))
+  same_call && scored && min(file.mtime(sf)) > max(file.mtime(inputs))
+}
+
 run_scdrs <- function(config, sex) {
   stage <- "scdrs"
   log_info(stage, sprintf("=== Single-cell integration: %s ===", sex))
@@ -52,15 +68,23 @@ run_scdrs <- function(config, sex) {
   }
   fwrite(z, zfile, sep = "\t", na = "NA")
   gs <- file.path(out_dir, "magma_top1000.gs")
+  gs_prev <- if (file.exists(gs)) readLines(gs, warn = FALSE)
   run_tool(scdrs, c("munge-gs", "--out-file", gs, "--zscore-file", zfile, "--weight", "zscore",
                     "--n-max", as.character(cfg$n_genes %||% 1000)), stage, file.path(out_dir, "munge_gs.log"), expect = gs)
   sc_out <- file.path(out_dir, "scdrs"); dir.create(sc_out, showWarnings = FALSE)
   h5 <- file.path(ts_dir, "ts_subsample.h5ad")
-  run_tool(scdrs, c("compute-score", "--h5ad-file", h5, "--h5ad-species", "human", "--gs-file", gs,
-                    "--gs-species", "human", "--cov-file", file.path(ts_dir, "ts_cov.tsv"), "--flag-filter-data", "True",
-                    "--flag-raw-count", "True", "--n-ctrl", as.character(cfg$n_ctrl %||% 1000),
-                    "--flag-return-ctrl-raw-score", "False", "--flag-return-ctrl-norm-score", "True",
-                    "--out-folder", sc_out), stage, file.path(out_dir, "compute_score.log"))
+  cov_file <- file.path(ts_dir, "ts_cov.tsv")
+  cs_args <- c("compute-score", "--h5ad-file", h5, "--h5ad-species", "human", "--gs-file", gs,
+               "--gs-species", "human", "--cov-file", cov_file, "--flag-filter-data", "True",
+               "--flag-raw-count", "True", "--n-ctrl", as.character(cfg$n_ctrl %||% 1000),
+               "--flag-return-ctrl-raw-score", "False", "--flag-return-ctrl-norm-score", "True",
+               "--out-folder", sc_out)
+  cs_log <- file.path(out_dir, "compute_score.log")
+  if (scdrs_scores_current(cs_args, postgwas_factors(config), cs_log, c(h5, cov_file), gs_prev, readLines(gs, warn = FALSE))) {
+    log_info(stage, "compute-score: reusing the last run's scores (same call and gene sets, every factor scored)")
+  } else {
+    run_tool(scdrs, cs_args, stage, cs_log)
+  }
   for (f in postgwas_factors(config)) {
     sf <- file.path(sc_out, paste0(f, ".full_score.gz"))
     run_tool(scdrs, c("perform-downstream", "--h5ad-file", h5, "--score-file", sf, "--out-folder", sc_out,
